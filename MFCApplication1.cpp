@@ -135,12 +135,6 @@ BOOL CMFCApplication1App::InitInstance()
 		return FALSE;
 	}
 
-	// 控制台子系统下，普通 UI 模式主动脱离控制台，避免显示额外黑窗。
-	if (GetConsoleWindow() != nullptr)
-	{
-		FreeConsole();
-	}
-
 	CMFCApplication1Dlg dlg;
 	m_pMainWnd = &dlg;
 	INT_PTR nResponse = dlg.DoModal();

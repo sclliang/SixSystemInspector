@@ -47,7 +47,7 @@ SixSystemInspector.exe -Report EDID "D:\Temp\edid-report.txt"
 - `SSD`：导出 SSD 信息（多盘分段）
 - `SYSTEM`：导出系统信息
 - `EDID`：导出屏幕详情
-- 进程会等待导出完成后再退出，适合脚本串行调用
+- 导出完成后程序才会退出；如在 `cmd` 脚本里串行调用 GUI 程序，请使用 `start "" /wait SixSystemInspector.exe -Report ...`
 
 ## 运行要求
 
