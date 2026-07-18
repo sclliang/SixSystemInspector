@@ -42,6 +42,7 @@ namespace
 	constexpr UINT IDC_OPTIONS_START = IDC_CHK_UAC;
 	constexpr UINT IDC_OPTIONS_END = IDC_CHK_WINDOWS_UPDATE;
 
+	// 去除字符串首尾空白字符，返回规整后的结果。
 	CString Trimmed(const CString& value)
 	{
 		CString result(value);
@@ -49,12 +50,14 @@ namespace
 		return result;
 	}
 
+	// 判断字符串是否为有效值（非空且不为 N/A）。
 	bool HasValue(const CString& value)
 	{
 		const CString trimmed = Trimmed(value);
 		return !trimmed.IsEmpty() && trimmed.CompareNoCase(_T("N/A")) != 0;
 	}
 
+	// 将字符串转换为小写，便于做不区分大小写的关键字匹配。
 	CString ToLower(const CString& value)
 	{
 		CString lowered(value);
@@ -62,6 +65,7 @@ namespace
 		return lowered;
 	}
 
+	// 将分隔符格式化为多行文本，便于在界面中按行展示。
 	CString NormalizeMultilineValue(const CString& value)
 	{
 		CString normalized(value);
@@ -70,6 +74,7 @@ namespace
 		return normalized;
 	}
 
+	// 判断是否为“通用显示器”这类无辨识度名称。
 	bool IsGenericMonitorLabel(const CString& value)
 	{
 		const CString lowered = ToLower(Trimmed(value));
@@ -80,6 +85,7 @@ namespace
 			lowered == _T("默认监视器");
 	}
 
+	// 将字节数转换为 GB 文本（保留 1 位小数）。
 	CString FormatBytesToGB(unsigned long long bytes)
 	{
 		const double sizeGb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
@@ -88,6 +94,7 @@ namespace
 		return text;
 	}
 
+	// 将字符串安全转换为无符号 64 位整数，失败或空值返回 0。
 	unsigned long long ParseUnsignedLongLong(const CString& text)
 	{
 		const CString trimmed = Trimmed(text);
@@ -98,6 +105,7 @@ namespace
 		return _wcstoui64(trimmed, nullptr, 10);
 	}
 
+	// 初始化 COM/WMI 安全上下文；成功后供后续查询复用。
 	bool EnsureComInitialized()
 	{
 		// WMI 查询依赖 COM；只在首次调用时初始化一次。
@@ -135,6 +143,7 @@ namespace
 		return true;
 	}
 
+	// 将 WMI VARIANT 值转换为 CString，兼容多种基础类型与数组类型。
 	CString VariantToCString(VARIANT& var)
 	{
 		if (var.vt == VT_NULL || var.vt == VT_EMPTY)
@@ -332,6 +341,7 @@ namespace
 		return rows;
 	}
 
+	// 执行查询并返回首个有效属性值。
 	CString FirstValue(const CString& wmiNamespace, const CString& wql, const CString& property)
 	{
 		const auto rows = QueryWmiRows(wmiNamespace, wql, { property });
@@ -345,6 +355,7 @@ namespace
 		return _T("");
 	}
 
+	// 聚合查询结果中的去重值，并用分隔符拼接成单行文本。
 	CString JoinValues(const CString& wmiNamespace, const CString& wql, const CString& property)
 	{
 		const auto rows = QueryWmiRows(wmiNamespace, wql, { property });
@@ -369,6 +380,7 @@ namespace
 		return result;
 	}
 
+	// 解析显示器型号，按数据源可靠性进行多级回退。
 	CString ResolveMonitorModel()
 	{
 		const auto monitorRows = QueryWmiRows(
@@ -429,6 +441,7 @@ namespace
 		return monitor;
 	}
 
+	// 解析内存总容量与每条内存参数，生成可读摘要。
 	CString ResolveMemoryInfo()
 	{
 		const auto rows = QueryWmiRows(
@@ -499,6 +512,7 @@ namespace
 		return result;
 	}
 
+	// 解析磁盘型号、容量与接口类型，生成可读摘要。
 	CString ResolveDiskInfo()
 	{
 		const auto rows = QueryWmiRows(
@@ -555,6 +569,7 @@ namespace
 		return result;
 	}
 
+	// 解析 EC（Embedded Controller）版本号。
 	CString ResolveEcVersion()
 	{
 		const auto rows = QueryWmiRows(
@@ -581,6 +596,7 @@ namespace
 		return version;
 	}
 
+	// 按网卡类型（有线/无线）筛选并汇总 MAC 地址。
 	CString ResolveMacAddress(bool wireless)
 	{
 		const auto rows = QueryWmiRows(
@@ -647,6 +663,7 @@ namespace
 		return result;
 	}
 
+	// 解析蓝牙适配器地址列表。
 	CString ResolveBluetoothAddress()
 	{
 		const auto rows = QueryWmiRows(
@@ -691,6 +708,7 @@ namespace
 		return result;
 	}
 
+	// 解析 TPM 厂商与规范版本信息。
 	CString ResolveTpmModel()
 	{
 		const auto rows = QueryWmiRows(
@@ -745,11 +763,13 @@ protected:
 	DECLARE_MESSAGE_MAP()
 };
 
+// 构造“关于”对话框。
 CAboutDlg::CAboutDlg()
 	: CDialogEx(IDD_ABOUTBOX)
 {
 }
 
+// 绑定“关于”对话框的数据交换逻辑。
 void CAboutDlg::DoDataExchange(CDataExchange* pDX)
 {
 	CDialogEx::DoDataExchange(pDX);
@@ -759,12 +779,14 @@ BEGIN_MESSAGE_MAP(CAboutDlg, CDialogEx)
 END_MESSAGE_MAP()
 
 // CMFCApplication1Dlg 对话框
+// 构造主对话框并加载应用图标。
 CMFCApplication1Dlg::CMFCApplication1Dlg(CWnd* pParent /*=nullptr*/)
 	: CDialogEx(IDD_MFCAPPLICATION1_DIALOG, pParent)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
 
+// 绑定主对话框的数据交换逻辑。
 void CMFCApplication1Dlg::DoDataExchange(CDataExchange* pDX)
 {
 	CDialogEx::DoDataExchange(pDX);
@@ -787,6 +809,7 @@ BEGIN_MESSAGE_MAP(CMFCApplication1Dlg, CDialogEx)
 	ON_COMMAND_RANGE(IDC_OPTIONS_START, IDC_OPTIONS_END, &CMFCApplication1Dlg::OnSettingsOptionChanged)
 END_MESSAGE_MAP()
 
+// 初始化主对话框：菜单、图标、布局与异步加载入口。
 BOOL CMFCApplication1Dlg::OnInitDialog()
 {
 	CDialogEx::OnInitDialog();
@@ -818,6 +841,7 @@ BOOL CMFCApplication1Dlg::OnInitDialog()
 	return TRUE;
 }
 
+// 处理系统命令：拦截“关于”并弹窗，其余交给基类。
 void CMFCApplication1Dlg::OnSysCommand(UINT nID, LPARAM lParam)
 {
 	if ((nID & 0xFFF0) == IDM_ABOUTBOX)
@@ -831,6 +855,7 @@ void CMFCApplication1Dlg::OnSysCommand(UINT nID, LPARAM lParam)
 	}
 }
 
+// 处理窗口绘制：最小化时绘图标，正常时绘制主界面。
 void CMFCApplication1Dlg::OnPaint()
 {
 	if (IsIconic())
@@ -855,11 +880,13 @@ void CMFCApplication1Dlg::OnPaint()
 	}
 }
 
+// 返回窗口最小化拖拽时显示的光标。
 HCURSOR CMFCApplication1Dlg::OnQueryDragIcon()
 {
 	return static_cast<HCURSOR>(m_hIcon);
 }
 
+// 响应窗口大小变化并触发布局重算与重绘。
 void CMFCApplication1Dlg::OnSize(UINT nType, int cx, int cy)
 {
 	CDialogEx::OnSize(nType, cx, cy);
@@ -870,6 +897,7 @@ void CMFCApplication1Dlg::OnSize(UINT nType, int cx, int cy)
 	}
 }
 
+// 处理侧栏点击，切换“系统信息/系统设置”页面。
 void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 {
 	if (m_infoMenuRect.PtInRect(point))
@@ -894,6 +922,7 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 	CDialogEx::OnLButtonDown(nFlags, point);
 }
 
+// 处理垂直滚动条消息并更新当前滚动位置。
 void CMFCApplication1Dlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
 {
 	if (m_activePage != PAGE_SYSTEM_INFO && m_activePage != PAGE_SYSTEM_SETTINGS)
@@ -954,6 +983,7 @@ void CMFCApplication1Dlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 	CDialogEx::OnVScroll(nSBCode, nPos, pScrollBar);
 }
 
+// 处理鼠标滚轮滚动，实现内容区平滑滚动。
 BOOL CMFCApplication1Dlg::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
 {
 	if (m_activePage != PAGE_SYSTEM_INFO && m_activePage != PAGE_SYSTEM_SETTINGS)
@@ -994,6 +1024,7 @@ BOOL CMFCApplication1Dlg::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
 	return CDialogEx::OnMouseWheel(nFlags, zDelta, pt);
 }
 
+// 构建主界面初始布局与窗口标题。
 void CMFCApplication1Dlg::BuildMainLayout()
 {
 	EnsureUiFonts();
@@ -1004,6 +1035,7 @@ void CMFCApplication1Dlg::BuildMainLayout()
 	RecalcLayoutRects(clientRect);
 }
 
+// 根据新窗口尺寸调整布局。
 void CMFCApplication1Dlg::AdjustLayout(int cx, int cy)
 {
 	CRect clientRect(0, 0, cx, cy);
@@ -1011,6 +1043,7 @@ void CMFCApplication1Dlg::AdjustLayout(int cx, int cy)
 	UpdateSettingsControlLayout();
 }
 
+// 向系统信息数据源追加一条展示记录。
 void CMFCApplication1Dlg::AddSystemInfoRow(const CString& item, const CString& value)
 {
 	InfoRow row;
@@ -1019,6 +1052,7 @@ void CMFCApplication1Dlg::AddSystemInfoRow(const CString& item, const CString& v
 	m_systemRows.push_back(row);
 }
 
+// 响应异步加载消息，执行系统信息采集。
 LRESULT CMFCApplication1Dlg::OnLoadSystemInformation(WPARAM wParam, LPARAM lParam)
 {
 	UNREFERENCED_PARAMETER(wParam);
@@ -1027,6 +1061,7 @@ LRESULT CMFCApplication1Dlg::OnLoadSystemInformation(WPARAM wParam, LPARAM lPara
 	return 0;
 }
 
+// 聚合 WMI 信息并刷新系统信息页数据。
 void CMFCApplication1Dlg::LoadSystemInformation()
 {
 	m_systemRows.clear();
@@ -1069,12 +1104,14 @@ void CMFCApplication1Dlg::LoadSystemInformation()
 	Invalidate();
 }
 
+// 关闭默认背景擦除，配合双缓冲降低闪烁。
 BOOL CMFCApplication1Dlg::OnEraseBkgnd(CDC* pDC)
 {
 	UNREFERENCED_PARAMETER(pDC);
 	return TRUE;
 }
 
+// 按需创建字体与背景画刷资源（仅初始化一次）。
 void CMFCApplication1Dlg::EnsureUiFonts()
 {
 	if (m_titleFont.GetSafeHandle() == nullptr)
@@ -1107,6 +1144,7 @@ void CMFCApplication1Dlg::EnsureUiFonts()
 	}
 }
 
+// 绘制圆角卡片背景块。
 void CMFCApplication1Dlg::DrawRoundedCard(CDC& dc, const CRect& rect, COLORREF fillColor, int radius)
 {
 	CPen pen(PS_SOLID, 1, fillColor);
@@ -1118,6 +1156,7 @@ void CMFCApplication1Dlg::DrawRoundedCard(CDC& dc, const CRect& rect, COLORREF f
 	dc.SelectObject(oldBrush);
 }
 
+// 绘制主内容区域（系统信息页或系统设置页）。
 void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect)
 {
 	EnsureUiFonts();
@@ -1251,6 +1290,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	memDc.SelectObject(oldBitmap);
 }
 
+// 绘制系统设置页背景卡片与分组标题。
 void CMFCApplication1Dlg::DrawSystemSettings(CDC& dc, const CRect& clientRect)
 {
 	UNREFERENCED_PARAMETER(clientRect);
@@ -1353,6 +1393,7 @@ void CMFCApplication1Dlg::DrawSystemSettings(CDC& dc, const CRect& clientRect)
 	dc.DrawText(_T("更新与维护"), groupTitleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 }
 
+// 根据内容高度与可视高度刷新滚动条参数。
 void CMFCApplication1Dlg::UpdateVerticalScrollBar(int contentHeight, int viewHeight)
 {
 	m_contentHeight = max(contentHeight, 0);
@@ -1370,6 +1411,7 @@ void CMFCApplication1Dlg::UpdateVerticalScrollBar(int contentHeight, int viewHei
 	ShowScrollBar(SB_VERT, m_contentHeight > viewHeight);
 }
 
+// 计算侧边栏、内容区与菜单按钮矩形。
 void CMFCApplication1Dlg::RecalcLayoutRects(const CRect& clientRect)
 {
 	const int margin = 12;
@@ -1381,6 +1423,7 @@ void CMFCApplication1Dlg::RecalcLayoutRects(const CRect& clientRect)
 	m_settingsMenuRect = CRect(m_sideRect.left + 10, m_infoMenuRect.bottom + 10, m_sideRect.right - 10, m_infoMenuRect.bottom + 62);
 }
 
+// 动态创建设置页复选框、按钮与状态文本控件。
 void CMFCApplication1Dlg::CreateSettingsControls()
 {
 	const DWORD chkStyle = WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX;
@@ -1421,6 +1464,7 @@ void CMFCApplication1Dlg::CreateSettingsControls()
 	UpdateSettingsControlLayout();
 }
 
+// 按当前页面几何参数更新设置控件位置。
 void CMFCApplication1Dlg::UpdateSettingsControlLayout()
 {
 	if (!::IsWindow(m_chkUAC.GetSafeHwnd()))
@@ -1507,6 +1551,7 @@ void CMFCApplication1Dlg::UpdateSettingsControlLayout()
 	m_adminHintText.MoveWindow(statusCardRect.left + 10, statusCardRect.top + 8 + statusLineHeight, statusCardRect.Width() - 20, statusLineHeight, TRUE);
 }
 
+// 根据当前页显示/隐藏设置控件，并重置设置页滚动位置。
 void CMFCApplication1Dlg::UpdatePageVisibility()
 {
 	const bool showSettings = (m_activePage == PAGE_SYSTEM_SETTINGS);
@@ -1535,6 +1580,7 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	}
 }
 
+// 更新状态提示文字（颜色参数保留给后续扩展）。
 void CMFCApplication1Dlg::SetStatusText(const CString& text, COLORREF color)
 {
 	UNREFERENCED_PARAMETER(color);
@@ -1544,6 +1590,7 @@ void CMFCApplication1Dlg::SetStatusText(const CString& text, COLORREF color)
 	}
 }
 
+// 为设置页控件统一配置文本与背景颜色。
 HBRUSH CMFCApplication1Dlg::OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor)
 {
 	HBRUSH hbr = CDialogEx::OnCtlColor(pDC, pWnd, nCtlColor);
@@ -1569,6 +1616,7 @@ HBRUSH CMFCApplication1Dlg::OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor)
 	return static_cast<HBRUSH>(m_uiBackgroundBrush.GetSafeHandle());
 }
 
+// 返回所有设置项复选框，便于批量遍历处理。
 std::vector<CButton*> CMFCApplication1Dlg::GetOptionCheckBoxes()
 {
 	return {
@@ -1577,6 +1625,7 @@ std::vector<CButton*> CMFCApplication1Dlg::GetOptionCheckBoxes()
 	};
 }
 
+// 判断设置项是否全部处于选中状态。
 bool CMFCApplication1Dlg::AreAllOptionsSelected() const
 {
 	const CButton* options[] = {
@@ -1594,6 +1643,7 @@ bool CMFCApplication1Dlg::AreAllOptionsSelected() const
 	return true;
 }
 
+// 批量设置全部选项勾选状态。
 void CMFCApplication1Dlg::SetAllOptions(bool isChecked)
 {
 	for (CButton* option : GetOptionCheckBoxes())
@@ -1602,6 +1652,7 @@ void CMFCApplication1Dlg::SetAllOptions(bool isChecked)
 	}
 }
 
+// 刷新“全选/取消全选”按钮标题。
 void CMFCApplication1Dlg::UpdateToggleSelectButton()
 {
 	if (::IsWindow(m_btnToggleSelect.GetSafeHwnd()))
@@ -1610,6 +1661,7 @@ void CMFCApplication1Dlg::UpdateToggleSelectButton()
 	}
 }
 
+// 检测当前进程是否属于管理员组。
 bool CMFCApplication1Dlg::IsRunningAsAdmin() const
 {
 	BOOL isMember = FALSE;
@@ -1624,12 +1676,14 @@ bool CMFCApplication1Dlg::IsRunningAsAdmin() const
 	return isMember == TRUE;
 }
 
+// 选项变更后同步刷新全选按钮文案。
 void CMFCApplication1Dlg::OnSettingsOptionChanged(UINT nID)
 {
 	UNREFERENCED_PARAMETER(nID);
 	UpdateToggleSelectButton();
 }
 
+// 在“全选”和“取消全选”间切换当前设置项状态。
 void CMFCApplication1Dlg::OnBnClickedToggleSelect()
 {
 	const bool selectAll = !AreAllOptionsSelected();
@@ -1638,6 +1692,7 @@ void CMFCApplication1Dlg::OnBnClickedToggleSelect()
 	SetStatusText(selectAll ? _T("已全选所有设置项。") : _T("已取消所有选择。"), RGB(60, 80, 110));
 }
 
+// 执行用户勾选的系统设置项并汇总结果提示。
 void CMFCApplication1Dlg::OnBnClickedApplySettings()
 {
 	bool hasSelection = false;
@@ -1672,6 +1727,7 @@ void CMFCApplication1Dlg::OnBnClickedApplySettings()
 		allSuccess ? RGB(30, 120, 40) : RGB(180, 50, 50));
 }
 
+// 二次确认后发起系统重启命令。
 void CMFCApplication1Dlg::OnBnClickedRebootSystem()
 {
 	if (AfxMessageBox(_T("系统即将重启，确认继续？"), MB_ICONWARNING | MB_YESNO) == IDYES)
@@ -1687,6 +1743,7 @@ void CMFCApplication1Dlg::OnBnClickedRebootSystem()
 	}
 }
 
+// 启动命令行进程并同步等待结束，返回退出码是否为 0。
 bool CMFCApplication1Dlg::RunProcessAndWait(const CString& fileName, const CString& args, const CString* workingDirectory)
 {
 	CString commandLine;
@@ -1726,6 +1783,7 @@ bool CMFCApplication1Dlg::RunProcessAndWait(const CString& fileName, const CStri
 	return exitCode == 0;
 }
 
+// 通过注册表开关启用/禁用 UAC。
 bool CMFCApplication1Dlg::ApplyUAC(bool disable)
 {
 	CRegKey key;
@@ -1736,6 +1794,7 @@ bool CMFCApplication1Dlg::ApplyUAC(bool disable)
 	return key.SetDWORDValue(_T("EnableLUA"), disable ? 0 : 1) == ERROR_SUCCESS;
 }
 
+// 通过 netsh 同时设置公有/私有配置文件防火墙状态。
 bool CMFCApplication1Dlg::ApplyFirewall(bool disable)
 {
 	const CString state = disable ? _T("off") : _T("on");
@@ -1743,6 +1802,7 @@ bool CMFCApplication1Dlg::ApplyFirewall(bool disable)
 		RunProcessAndWait(_T("netsh.exe"), _T("advfirewall set publicprofile state ") + state, nullptr);
 }
 
+// 设置安全中心通知项（杀毒/防火墙/更新）开关。
 bool CMFCApplication1Dlg::ApplySecurityCenter(bool disable)
 {
 	CRegKey key;
@@ -1756,6 +1816,7 @@ bool CMFCApplication1Dlg::ApplySecurityCenter(bool disable)
 		key.SetDWORDValue(_T("UpdatesDisableNotify"), val) == ERROR_SUCCESS;
 }
 
+// 设置系统崩溃后是否自动重启。
 bool CMFCApplication1Dlg::ApplyAutoReboot(bool disable)
 {
 	CRegKey key;
@@ -1766,6 +1827,7 @@ bool CMFCApplication1Dlg::ApplyAutoReboot(bool disable)
 	return key.SetDWORDValue(_T("AutoReboot"), disable ? 0 : 1) == ERROR_SUCCESS;
 }
 
+// 设置崩溃时是否启用内存转储。
 bool CMFCApplication1Dlg::ApplyCrashDump(bool enable)
 {
 	CRegKey key;
@@ -1776,6 +1838,7 @@ bool CMFCApplication1Dlg::ApplyCrashDump(bool enable)
 	return key.SetDWORDValue(_T("CrashDumpEnabled"), enable ? 1 : 0) == ERROR_SUCCESS;
 }
 
+// 设置屏幕保护程序策略与当前用户配置。
 bool CMFCApplication1Dlg::ApplyScreenSaver(bool disable)
 {
 	CRegKey key;
@@ -1802,6 +1865,7 @@ bool CMFCApplication1Dlg::ApplyScreenSaver(bool disable)
 	return true;
 }
 
+// 批量调整电源超时参数（交流/电池）。
 bool CMFCApplication1Dlg::ApplyPowerSettings(bool setNever)
 {
 	const CString timeout = setNever ? _T("0") : _T("20");
@@ -1815,6 +1879,7 @@ bool CMFCApplication1Dlg::ApplyPowerSettings(bool setNever)
 		RunProcessAndWait(_T("powercfg.exe"), _T("/change hibernate-timeout-dc ") + timeout, nullptr);
 }
 
+// 调用内置工具执行 Windows Update 禁用流程。
 bool CMFCApplication1Dlg::ApplyWindowsUpdate(bool disable)
 {
 	if (!disable)
@@ -1858,6 +1923,7 @@ bool CMFCApplication1Dlg::ApplyWindowsUpdate(bool disable)
 	return ok;
 }
 
+// 将资源释放为带指定文件名后缀的临时文件。
 CString CMFCApplication1Dlg::ExtractResourceToTempFile(UINT resourceId, const CString& fileName)
 {
 	TCHAR tempPath[MAX_PATH] = {};
@@ -1879,6 +1945,7 @@ CString CMFCApplication1Dlg::ExtractResourceToTempFile(UINT resourceId, const CS
 	return ExtractResourceToPath(resourceId, outputPath) ? outputPath : _T("");
 }
 
+// 将 RCDATA 资源写入目标路径文件。
 bool CMFCApplication1Dlg::ExtractResourceToPath(UINT resourceId, const CString& outputPath)
 {
 	HRSRC hResource = FindResource(AfxGetResourceHandle(), MAKEINTRESOURCE(resourceId), RT_RCDATA);
@@ -1911,6 +1978,7 @@ bool CMFCApplication1Dlg::ExtractResourceToPath(UINT resourceId, const CString& 
 	return true;
 }
 
+// 删除临时文件路径（空路径时忽略）。
 void CMFCApplication1Dlg::DeleteTempFile(const CString& filePath)
 {
 	if (!filePath.IsEmpty())
