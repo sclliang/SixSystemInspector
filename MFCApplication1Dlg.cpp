@@ -17,6 +17,7 @@
 #include <winioctl.h>
 #include <Shlwapi.h>
 #include <cwctype>
+#include <cmath>
 #include <map>
 #include <set>
 #include <vector>
@@ -57,6 +58,8 @@ namespace
 
 	bool EnsureComInitialized();
 	CString VariantToCString(VARIANT& var);
+	bool RunProcessCaptureOutput(const CString& executablePath, CString& output);
+	CString JoinUniqueValues(const std::set<CString, std::less<>>& values, const CString& separator);
 
 	// 去除字符串首尾空白字符，返回规整后的结果。
 	CString Trimmed(const CString& value)
@@ -96,9 +99,128 @@ namespace
 		const CString lowered = ToLower(Trimmed(value));
 		return lowered.IsEmpty() ||
 			lowered == _T("generic pnp monitor") ||
+			lowered == _T("generic monitor") ||
 			lowered == _T("default monitor") ||
 			lowered == _T("通用即插即用监视器") ||
 			lowered == _T("默认监视器");
+	}
+
+	CString NormalizeMonitorLabel(const CString& value)
+	{
+		CString label = Trimmed(value);
+		if (!HasValue(label))
+		{
+			return _T("");
+		}
+
+		const CString lowered = ToLower(label);
+		const int leftParen = label.Find(_T('('));
+		const int rightParen = label.ReverseFind(_T(')'));
+		const bool hasWrappedModel = leftParen >= 0 && rightParen > leftParen;
+		if ((lowered.Find(_T("generic monitor")) == 0 ||
+			lowered.Find(_T("generic pnp monitor")) == 0 ||
+			lowered.Find(_T("通用")) == 0) &&
+			hasWrappedModel)
+		{
+			const CString inner = Trimmed(label.Mid(leftParen + 1, rightParen - leftParen - 1));
+			if (HasValue(inner) && !IsGenericMonitorLabel(inner))
+			{
+				return inner;
+			}
+		}
+
+		return IsGenericMonitorLabel(label) ? _T("") : label;
+	}
+
+	bool IsLikelyMonitorIdToken(const CString& value)
+	{
+		const CString token = Trimmed(value);
+		if (token.GetLength() < 6 || token.GetLength() > 12)
+		{
+			return false;
+		}
+		if (!(token[0] >= L'A' && token[0] <= L'Z') ||
+			!(token[1] >= L'A' && token[1] <= L'Z') ||
+			!(token[2] >= L'A' && token[2] <= L'Z'))
+		{
+			return false;
+		}
+		bool hasDigit = false;
+		for (int i = 3; i < token.GetLength(); ++i)
+		{
+			const wchar_t ch = token[i];
+			if (ch >= L'0' && ch <= L'9')
+			{
+				hasDigit = true;
+			}
+			else if (!iswalnum(ch))
+			{
+				return false;
+			}
+		}
+		return hasDigit;
+	}
+
+	CString ResolveEdidToolPath()
+	{
+		TCHAR modulePath[MAX_PATH] = {};
+		GetModuleFileName(nullptr, modulePath, MAX_PATH);
+		CString executableDir(modulePath);
+		const int slash = executableDir.ReverseFind(_T('\\'));
+		if (slash >= 0)
+		{
+			executableDir = executableDir.Left(slash);
+		}
+
+		CString edidToolPath = executableDir + _T("\\res\\wEdid.exe");
+		if (!PathFileExists(edidToolPath))
+		{
+			edidToolPath = _T("D:\\source\\repos\\MFCApplication1\\res\\wEdid.exe");
+		}
+		return edidToolPath;
+	}
+
+	CString ResolveMonitorNameFromEdidTool()
+	{
+		const CString edidToolPath = ResolveEdidToolPath();
+		CString output;
+		if (!RunProcessCaptureOutput(edidToolPath, output))
+		{
+			return _T("");
+		}
+
+		CStringArray lines;
+		int start = 0;
+		while (start <= output.GetLength())
+		{
+			const int end = output.Find(_T('\n'), start);
+			CString line = end >= 0 ? output.Mid(start, end - start) : output.Mid(start);
+			line.Trim();
+			if (!line.IsEmpty())
+			{
+				lines.Add(line);
+			}
+			if (end < 0)
+			{
+				break;
+			}
+			start = end + 1;
+		}
+
+		std::set<CString, std::less<>> monitorNames;
+		for (int i = 0; i < lines.GetCount(); ++i)
+		{
+			const CString& line = lines.GetAt(i);
+			if (line.Find(_T("Monitor Name:")) == 0)
+			{
+				const CString monitorName = Trimmed(line.Mid(13));
+				if (HasValue(monitorName) && !IsLikelyMonitorIdToken(monitorName))
+				{
+					monitorNames.insert(monitorName);
+				}
+			}
+		}
+		return JoinUniqueValues(monitorNames, _T("\r\n"));
 	}
 
 	// 将字节数转换为 GB 文本（保留 1 位小数）。
@@ -1169,65 +1291,459 @@ namespace
 		return result;
 	}
 
+	CString JoinUniqueValues(const std::set<CString, std::less<>>& values, const CString& separator)
+	{
+		CString result;
+		for (const CString& value : values)
+		{
+			if (!result.IsEmpty())
+			{
+				result += separator;
+			}
+			result += value;
+		}
+		return result;
+	}
+
+	bool TryParsePositiveInt(const CString& text, int& value)
+	{
+		value = 0;
+		const CString trimmed = Trimmed(text);
+		if (trimmed.IsEmpty())
+		{
+			return false;
+		}
+
+		wchar_t* end = nullptr;
+		const long parsed = wcstol(trimmed, &end, 10);
+		if (end == nullptr || *end != L'\0' || parsed <= 0)
+		{
+			return false;
+		}
+
+		value = static_cast<int>(parsed);
+		return true;
+	}
+
+	CString DecodeMonitorManufacturer(const CString& value)
+	{
+		CString text = Trimmed(value);
+		if (!HasValue(text))
+		{
+			return _T("");
+		}
+
+		CString upper(text);
+		upper.MakeUpper();
+		if (upper.GetLength() == 3 &&
+			iswalnum(upper[0]) &&
+			iswalnum(upper[1]) &&
+			iswalnum(upper[2]))
+		{
+			if (upper == _T("VSC")) return _T("优派");
+			if (upper == _T("DEL")) return _T("戴尔");
+			if (upper == _T("ACR")) return _T("宏碁");
+			if (upper == _T("AOC")) return _T("AOC");
+			if (upper == _T("SAM")) return _T("三星");
+			if (upper == _T("GSM")) return _T("LG");
+			if (upper == _T("BNQ")) return _T("明基");
+			if (upper == _T("SNY")) return _T("索尼");
+			if (upper == _T("PHL")) return _T("飞利浦");
+			if (upper == _T("HWP")) return _T("惠普");
+			if (upper == _T("LEN")) return _T("联想");
+			if (upper == _T("MSI")) return _T("微星");
+			if (upper == _T("ASU")) return _T("华硕");
+		}
+
+		return text;
+	}
+
+	CString DetectGpuBoardVendorFromName(const CString& gpuName)
+	{
+		const CString matcher = ToLower(gpuName);
+		if (matcher.Find(_T("影驰")) >= 0 || matcher.Find(_T("galax")) >= 0 || matcher.Find(_T("kfa2")) >= 0) return _T("影驰");
+		if (matcher.Find(_T("华硕")) >= 0 || matcher.Find(_T("asus")) >= 0) return _T("华硕");
+		if (matcher.Find(_T("微星")) >= 0 || matcher.Find(_T("msi")) >= 0) return _T("微星");
+		if (matcher.Find(_T("技嘉")) >= 0 || matcher.Find(_T("gigabyte")) >= 0 || matcher.Find(_T("aorus")) >= 0) return _T("技嘉");
+		if (matcher.Find(_T("七彩虹")) >= 0 || matcher.Find(_T("colorful")) >= 0) return _T("七彩虹");
+		if (matcher.Find(_T("索泰")) >= 0 || matcher.Find(_T("zotac")) >= 0) return _T("索泰");
+		if (matcher.Find(_T("映众")) >= 0 || matcher.Find(_T("inno3d")) >= 0) return _T("映众");
+		if (matcher.Find(_T("耕升")) >= 0 || matcher.Find(_T("gainward")) >= 0) return _T("耕升");
+		if (matcher.Find(_T("蓝宝石")) >= 0 || matcher.Find(_T("sapphire")) >= 0) return _T("蓝宝石");
+		if (matcher.Find(_T("讯景")) >= 0 || matcher.Find(_T("xfx")) >= 0) return _T("讯景");
+		if (matcher.Find(_T("撼讯")) >= 0 || matcher.Find(_T("powercolor")) >= 0) return _T("撼讯");
+		if (matcher.Find(_T("盈通")) >= 0 || matcher.Find(_T("yeston")) >= 0) return _T("盈通");
+		if (matcher.Find(_T("铭瑄")) >= 0 || matcher.Find(_T("maxsun")) >= 0) return _T("铭瑄");
+		return _T("");
+	}
+
+	CString NormalizeGpuChipVendor(const CString& text)
+	{
+		const CString matcher = ToLower(text);
+		if (matcher.Find(_T("nvidia")) >= 0 || matcher.Find(_T("geforce")) >= 0 || matcher.Find(_T("quadro")) >= 0 || matcher.Find(_T("rtx")) >= 0) return _T("NVIDIA");
+		if (matcher.Find(_T("amd")) >= 0 || matcher.Find(_T("radeon")) >= 0 || matcher.Find(_T("advanced micro devices")) >= 0 || matcher.Find(_T("ati")) >= 0) return _T("AMD");
+		if (matcher.Find(_T("intel")) >= 0 || matcher.Find(_T("arc")) >= 0 || matcher.Find(_T("iris")) >= 0 || matcher.Find(_T("uhd")) >= 0) return _T("Intel");
+		return _T("");
+	}
+
+	bool IsVirtualGpuAdapter(const CString& gpuName, const CString& pnpDeviceId)
+	{
+		const CString nameLower = ToLower(gpuName);
+		const CString pnpLower = ToLower(pnpDeviceId);
+		return nameLower.Find(_T("idd")) >= 0 ||
+			nameLower.Find(_T("oray")) >= 0 ||
+			nameLower.Find(_T("virtual")) >= 0 ||
+			nameLower.Find(_T("remote")) >= 0 ||
+			pnpLower.Find(_T("root\\")) == 0 ||
+			pnpLower.Find(_T("swd\\")) == 0;
+	}
+
+	CString ResolveGpuModel()
+	{
+		const auto rows = QueryWmiRows(
+			_T("ROOT\\CIMV2"),
+			_T("SELECT Name, PNPDeviceID FROM Win32_VideoController"),
+			{ _T("Name"), _T("PNPDeviceID") });
+
+		std::set<CString, std::less<>> models;
+		for (const auto& row : rows)
+		{
+			if (row.size() < 2 || !HasValue(row[0]))
+			{
+				continue;
+			}
+
+			if (IsVirtualGpuAdapter(row[0], row[1]))
+			{
+				continue;
+			}
+
+			models.insert(Trimmed(row[0]));
+		}
+
+		return JoinUniqueValues(models, _T(" / "));
+	}
+
+	CString ExtractMonitorCodeFromInstance(const CString& instanceName)
+	{
+		const CString source = Trimmed(instanceName);
+		if (!HasValue(source))
+		{
+			return _T("");
+		}
+
+		const CString lowered = ToLower(source);
+		int start = -1;
+		int tokenLength = 0;
+		const int displayPos = lowered.Find(_T("display\\"));
+		if (displayPos >= 0)
+		{
+			start = displayPos;
+			tokenLength = 8;
+		}
+		const int monitorPos = lowered.Find(_T("monitor\\"));
+		if (monitorPos >= 0 && (start < 0 || monitorPos < start))
+		{
+			start = monitorPos;
+			tokenLength = 8;
+		}
+		if (start < 0)
+		{
+			return _T("");
+		}
+
+		start += tokenLength;
+		int end = source.Find(_T('\\'), start);
+		if (end < 0)
+		{
+			end = source.Find(_T('_'), start);
+		}
+		if (end < 0)
+		{
+			end = source.GetLength();
+		}
+		if (end <= start)
+		{
+			return _T("");
+		}
+
+		const CString modelCode = Trimmed(source.Mid(start, end - start));
+		if (!HasValue(modelCode) || IsGenericMonitorLabel(modelCode))
+		{
+			return _T("");
+		}
+		return modelCode;
+	}
+
+	CString ResolveGpuVendor()
+	{
+		const auto rows = QueryWmiRows(
+			_T("ROOT\\CIMV2"),
+			_T("SELECT Name, AdapterCompatibility, PNPDeviceID, VideoProcessor FROM Win32_VideoController"),
+			{ _T("Name"), _T("AdapterCompatibility"), _T("PNPDeviceID"), _T("VideoProcessor") });
+
+		std::set<CString, std::less<>> vendors;
+		for (const auto& row : rows)
+		{
+			if (row.size() < 4)
+			{
+				continue;
+			}
+
+			if (IsVirtualGpuAdapter(row[0], row[2]))
+			{
+				continue;
+			}
+
+			const CString chipVendor = NormalizeGpuChipVendor(row[1] + _T(" ") + row[2] + _T(" ") + row[3] + _T(" ") + row[0]);
+			const CString boardVendor = DetectGpuBoardVendorFromName(row[0]);
+			CString vendor;
+
+			if (HasValue(chipVendor))
+			{
+				vendor = chipVendor;
+			}
+			if (HasValue(boardVendor) && boardVendor.CompareNoCase(chipVendor) != 0)
+			{
+				if (!vendor.IsEmpty())
+				{
+					vendor += _T(" / ");
+				}
+				vendor += boardVendor;
+			}
+
+			if (HasValue(vendor))
+			{
+				vendors.insert(vendor);
+			}
+		}
+
+		return JoinUniqueValues(vendors, _T(" / "));
+	}
+
+	CString ResolveMonitorSizeInfo()
+	{
+		const auto rows = QueryWmiRows(
+			_T("ROOT\\WMI"),
+			_T("SELECT MaxHorizontalImageSize, MaxVerticalImageSize FROM WmiMonitorBasicDisplayParams"),
+			{ _T("MaxHorizontalImageSize"), _T("MaxVerticalImageSize") });
+
+		std::set<CString, std::less<>> sizeValues;
+		for (const auto& row : rows)
+		{
+			if (row.size() < 2)
+			{
+				continue;
+			}
+
+			int widthCm = 0;
+			int heightCm = 0;
+			if (!TryParsePositiveInt(row[0], widthCm) || !TryParsePositiveInt(row[1], heightCm))
+			{
+				continue;
+			}
+
+			const double diagonal = std::sqrt(static_cast<double>(widthCm * widthCm + heightCm * heightCm)) / 2.54;
+			CString sizeText;
+			if (diagonal >= 1.0)
+			{
+				sizeText.Format(_T("%.1f英寸 (%d x %d cm)"), diagonal, widthCm, heightCm);
+			}
+			else
+			{
+				sizeText.Format(_T("%d x %d cm"), widthCm, heightCm);
+			}
+
+			sizeValues.insert(sizeText);
+		}
+
+		return JoinUniqueValues(sizeValues, _T(" / "));
+	}
+
+	CString ResolveMonitorManufacturer()
+	{
+		std::set<CString, std::less<>> manufacturers;
+
+		const auto monitorIdRows = QueryWmiRows(
+			_T("ROOT\\WMI"),
+			_T("SELECT ManufacturerName FROM WmiMonitorID"),
+			{ _T("ManufacturerName") });
+		for (const auto& row : monitorIdRows)
+		{
+			if (row.empty())
+			{
+				continue;
+			}
+
+			const CString decoded = DecodeMonitorManufacturer(row[0]);
+			if (HasValue(decoded))
+			{
+				manufacturers.insert(decoded);
+			}
+		}
+
+		if (manufacturers.empty())
+		{
+			const auto pnpRows = QueryWmiRows(
+				_T("ROOT\\CIMV2"),
+				_T("SELECT Manufacturer FROM Win32_PnPEntity WHERE PNPClass='Monitor'"),
+				{ _T("Manufacturer") });
+			for (const auto& row : pnpRows)
+			{
+				if (row.empty() || !HasValue(row[0]))
+				{
+					continue;
+				}
+
+				const CString manufacturer = Trimmed(row[0]);
+				const CString lower = ToLower(manufacturer);
+				if (lower.Find(_T("generic")) >= 0 || lower.Find(_T("monitor")) >= 0)
+				{
+					continue;
+				}
+				manufacturers.insert(manufacturer);
+			}
+		}
+
+		return JoinUniqueValues(manufacturers, _T(" / "));
+	}
+
 	// 解析显示器型号，按数据源可靠性进行多级回退。
 	CString ResolveMonitorModel()
 	{
+		// 按需求优先使用 wEdid 解析出的 Monitor Name；拿不到再降级到 WMI。
+		const CString edidMonitorName = ResolveMonitorNameFromEdidTool();
+		if (HasValue(edidMonitorName))
+		{
+			return edidMonitorName;
+		}
+
 		const auto monitorRows = QueryWmiRows(
 			_T("ROOT\\WMI"),
-			_T("SELECT UserFriendlyName FROM WmiMonitorID"),
-			{ _T("UserFriendlyName") });
+			_T("SELECT UserFriendlyName, InstanceName, Active FROM WmiMonitorID"),
+			{ _T("UserFriendlyName"), _T("InstanceName"), _T("Active") });
 
-		std::set<CString, std::less<>> monitorNames;
+		std::set<CString, std::less<>> activeMonitorNames;
+		std::set<CString, std::less<>> allMonitorNames;
+		bool hasActiveMonitor = false;
 		for (const auto& row : monitorRows)
 		{
-			if (!row.empty() && HasValue(row[0]) && !IsGenericMonitorLabel(row[0]))
+			if (row.size() < 3)
 			{
-				monitorNames.insert(row[0]);
+				continue;
+			}
+
+			const bool isActive = row[2].CompareNoCase(_T("True")) == 0;
+			if (isActive)
+			{
+				hasActiveMonitor = true;
+			}
+
+			const CString normalizedName = NormalizeMonitorLabel(row[0]);
+			const CString fallbackCode = ExtractMonitorCodeFromInstance(row[1]);
+			const CString resolvedName = HasValue(normalizedName) ? normalizedName : fallbackCode;
+			if (HasValue(resolvedName))
+			{
+				allMonitorNames.insert(resolvedName);
+				if (isActive)
+				{
+					activeMonitorNames.insert(resolvedName);
+				}
 			}
 		}
 
-		CString monitor;
-		for (const CString& value : monitorNames)
+		bool activeLooksLikeIdOnly = hasActiveMonitor && !activeMonitorNames.empty();
+		for (const CString& name : activeMonitorNames)
 		{
-			if (!monitor.IsEmpty())
+			if (!IsLikelyMonitorIdToken(name))
 			{
-				monitor += _T("\r\n");
+				activeLooksLikeIdOnly = false;
+				break;
 			}
-			monitor += value;
 		}
-
-		if (HasValue(monitor))
+		if (hasActiveMonitor && !activeMonitorNames.empty() && !activeLooksLikeIdOnly)
 		{
-			return monitor;
+			return JoinUniqueValues(activeMonitorNames, _T("\r\n"));
 		}
 
-		// 优先读取更准确的 WmiMonitorID，失败时逐级降级到 PnP / DesktopMonitor。
-		const auto pnpRows = QueryWmiRows(
+		bool allLooksLikeIdOnly = !allMonitorNames.empty();
+		for (const CString& name : allMonitorNames)
+		{
+			if (!IsLikelyMonitorIdToken(name))
+			{
+				allLooksLikeIdOnly = false;
+				break;
+			}
+		}
+		if (!allMonitorNames.empty() && !allLooksLikeIdOnly)
+		{
+			return JoinUniqueValues(allMonitorNames, _T("\r\n"));
+		}
+
+		// 回退到 PnP/DesktopMonitor 名称，并对 Generic 包装名做提纯。
+		const auto pnpNameRows = QueryWmiRows(
 			_T("ROOT\\CIMV2"),
 			_T("SELECT Name FROM Win32_PnPEntity WHERE PNPClass='Monitor'"),
 			{ _T("Name") });
-		for (const auto& row : pnpRows)
+		std::set<CString, std::less<>> pnpNames;
+		for (const auto& row : pnpNameRows)
 		{
-			if (!row.empty() && HasValue(row[0]) && !IsGenericMonitorLabel(row[0]))
+			if (row.empty())
 			{
-				if (!monitor.IsEmpty())
-				{
-					monitor += _T("\r\n");
-				}
-				monitor += row[0];
+				continue;
+			}
+			const CString normalizedName = NormalizeMonitorLabel(row[0]);
+			if (HasValue(normalizedName))
+			{
+				pnpNames.insert(normalizedName);
 			}
 		}
-
-		if (HasValue(monitor))
+		if (!pnpNames.empty())
 		{
-			return monitor;
+			return JoinUniqueValues(pnpNames, _T("\r\n"));
 		}
 
-		monitor = JoinValues(
-				_T("ROOT\\CIMV2"),
-				_T("SELECT Name FROM Win32_DesktopMonitor"),
-				_T("Name"));
-		return monitor;
+		const auto desktopNameRows = QueryWmiRows(
+			_T("ROOT\\CIMV2"),
+			_T("SELECT Name FROM Win32_DesktopMonitor"),
+			{ _T("Name") });
+		std::set<CString, std::less<>> desktopNames;
+		for (const auto& row : desktopNameRows)
+		{
+			if (row.empty())
+			{
+				continue;
+			}
+			const CString normalizedName = NormalizeMonitorLabel(row[0]);
+			if (HasValue(normalizedName))
+			{
+				desktopNames.insert(normalizedName);
+			}
+		}
+		if (!desktopNames.empty())
+		{
+			return JoinUniqueValues(desktopNames, _T("\r\n"));
+		}
+
+		// 最后一层才回退到 PNP 设备标识中的型号代码，避免把显示器 ID 当名称展示。
+		const auto desktopRows = QueryWmiRows(
+			_T("ROOT\\CIMV2"),
+			_T("SELECT PNPDeviceID FROM Win32_DesktopMonitor"),
+			{ _T("PNPDeviceID") });
+		std::set<CString, std::less<>> monitorCodes;
+		for (const auto& row : desktopRows)
+		{
+			if (row.empty())
+			{
+				continue;
+			}
+			const CString modelCode = ExtractMonitorCodeFromInstance(row[0]);
+			if (HasValue(modelCode))
+			{
+				monitorCodes.insert(modelCode);
+			}
+		}
+		return JoinUniqueValues(monitorCodes, _T("\r\n"));
 	}
 
 	// 解析内存总容量与每条内存参数，生成可读摘要。
@@ -1337,15 +1853,21 @@ namespace
 			}
 		}
 
-		const std::vector<CString>& displayDisks = !ssdDisks.empty() ? ssdDisks : allDisks;
+		const std::vector<CString>* displayDisks = &allDisks;
+		if (!ssdDisks.empty() &&
+			(ssdDisks.size() == allDisks.size() || ssdDisks.size() >= 2))
+		{
+			displayDisks = &ssdDisks;
+		}
+
 		CString result;
-		for (size_t i = 0; i < displayDisks.size(); ++i)
+		for (size_t i = 0; i < displayDisks->size(); ++i)
 		{
 			if (i != 0)
 			{
 				result += _T("\r\n");
 			}
-			result += displayDisks[i];
+			result += (*displayDisks)[i];
 		}
 		return result;
 	}
@@ -2175,8 +2697,23 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	// 分项采集硬件、固件和网络信息，再统一写入展示列表。
 	const CString boardModel = FirstValue(_T("ROOT\\CIMV2"), _T("SELECT Product FROM Win32_BaseBoard"), _T("Product"));
 	const CString cpuModel = JoinValues(_T("ROOT\\CIMV2"), _T("SELECT Name FROM Win32_Processor"), _T("Name"));
-	const CString gpuModel = JoinValues(_T("ROOT\\CIMV2"), _T("SELECT Name FROM Win32_VideoController"), _T("Name"));
+	const CString gpuModel = ResolveGpuModel();
 	const CString monitorModel = ResolveMonitorModel();
+	const CString monitorSize = ResolveMonitorSizeInfo();
+	CString monitorInfo = monitorModel;
+	if (HasValue(monitorSize))
+	{
+		if (HasValue(monitorInfo))
+		{
+			monitorInfo += _T(" (");
+			monitorInfo += monitorSize;
+			monitorInfo += _T(")");
+		}
+		else
+		{
+			monitorInfo = monitorSize;
+		}
+	}
 	const CString memoryInfo = ResolveMemoryInfo();
 	const CString ssdInfo = ResolveDiskInfo();
 	const CString biosVersion = FirstValue(_T("ROOT\\CIMV2"), _T("SELECT SMBIOSBIOSVersion FROM Win32_BIOS"), _T("SMBIOSBIOSVersion"));
@@ -2214,7 +2751,7 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	AddSystemInfoRow(_T("主板型号"), boardModel);
 	AddSystemInfoRow(_T("CPU型号"), cpuModel);
 	AddSystemInfoRow(_T("GPU型号"), gpuModel);
-	AddSystemInfoRow(_T("显示器型号"), monitorModel);
+	AddSystemInfoRow(_T("显示器信息"), monitorInfo);
 	AddSystemInfoRow(_T("内存信息"), memoryInfo);
 	AddSystemInfoRow(_T("SSD信息"), ssdInfo);
 	AddSystemInfoRow(_T("BIOS版本"), biosVersion);
