@@ -22,6 +22,7 @@
 
 namespace
 {
+	// 自定义消息：在窗口初始化后异步加载系统信息，避免阻塞首屏渲染。
 	constexpr UINT WM_APP_LOAD_SYSTEM_INFO = WM_APP + 100;
 	constexpr int PAGE_SYSTEM_INFO = 0;
 	constexpr int PAGE_SYSTEM_SETTINGS = 1;
@@ -99,6 +100,7 @@ namespace
 
 	bool EnsureComInitialized()
 	{
+		// WMI 查询依赖 COM；只在首次调用时初始化一次。
 		static bool initialized = false;
 		static bool attempted = false;
 		if (attempted)
@@ -227,6 +229,7 @@ namespace
 		const CString& wql,
 		const std::vector<CString>& properties)
 	{
+		// 通用 WMI 查询入口：按属性顺序返回二维表，供各类硬件信息拼装复用。
 		std::vector<std::vector<CString>> rows;
 		if (!EnsureComInitialized())
 		{
@@ -397,6 +400,7 @@ namespace
 			return monitor;
 		}
 
+		// 优先读取更准确的 WmiMonitorID，失败时逐级降级到 PnP / DesktopMonitor。
 		const auto pnpRows = QueryWmiRows(
 			_T("ROOT\\CIMV2"),
 			_T("SELECT Name FROM Win32_PnPEntity WHERE PNPClass='Monitor'"),
@@ -807,6 +811,7 @@ BOOL CMFCApplication1Dlg::OnInitDialog()
 	BuildMainLayout();
 	CreateSettingsControls();
 	UpdatePageVisibility();
+	// 先显示界面，再通过自定义消息异步加载数据，提升启动响应速度。
 	m_loading = true;
 	PostMessage(WM_APP_LOAD_SYSTEM_INFO, 0, 0);
 
@@ -1027,6 +1032,7 @@ void CMFCApplication1Dlg::LoadSystemInformation()
 	m_systemRows.clear();
 	m_scrollPos = 0;
 
+	// 分项采集硬件、固件和网络信息，再统一写入展示列表。
 	const CString boardModel = FirstValue(_T("ROOT\\CIMV2"), _T("SELECT Product FROM Win32_BaseBoard"), _T("Product"));
 	const CString cpuModel = JoinValues(_T("ROOT\\CIMV2"), _T("SELECT Name FROM Win32_Processor"), _T("Name"));
 	const CString gpuModel = JoinValues(_T("ROOT\\CIMV2"), _T("SELECT Name FROM Win32_VideoController"), _T("Name"));
@@ -1116,6 +1122,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 {
 	EnsureUiFonts();
 
+	// 使用内存 DC 双缓冲绘制，减少重绘闪烁。
 	CDC memDc;
 	memDc.CreateCompatibleDC(&dc);
 	CBitmap bitmap;
@@ -1439,6 +1446,7 @@ void CMFCApplication1Dlg::UpdateSettingsControlLayout()
 	const int optionInnerMargin = 12;
 	const int groupGapY = 10;
 
+	// 与 DrawSystemSettings 保持同一套几何参数，保证绘制区域与控件命中区域一致。
 	const int top = m_contentRect.top + 10;
 	const int contentTop = top - m_scrollPos;
 	const int headerHeight = 84;
@@ -1650,6 +1658,7 @@ void CMFCApplication1Dlg::OnBnClickedApplySettings()
 
 	SetStatusText(_T("正在应用设置..."), RGB(60, 80, 110));
 	bool allSuccess = true;
+	// 仅执行用户勾选项；allSuccess 汇总所有操作结果。
 	if (m_chkUAC.GetCheck() == BST_CHECKED) allSuccess &= ApplyUAC(true);
 	if (m_chkFirewall.GetCheck() == BST_CHECKED) allSuccess &= ApplyFirewall(true);
 	if (m_chkSecCenter.GetCheck() == BST_CHECKED) allSuccess &= ApplySecurityCenter(true);
@@ -1709,6 +1718,7 @@ bool CMFCApplication1Dlg::RunProcessAndWait(const CString& fileName, const CStri
 	}
 
 	WaitForSingleObject(pi.hProcess, INFINITE);
+	// 以子进程退出码判断执行是否成功（0 表示成功）。
 	DWORD exitCode = 1;
 	GetExitCodeProcess(pi.hProcess, &exitCode);
 	CloseHandle(pi.hThread);
@@ -1834,6 +1844,7 @@ bool CMFCApplication1Dlg::ApplyWindowsUpdate(bool disable)
 	}
 	iniPath = dirPath + iniName;
 
+	// 释放内置工具到临时目录执行，结束后清理临时文件。
 	bool ok = ExtractResourceToPath(IDR_WUB_INI, iniPath);
 	if (ok)
 	{
