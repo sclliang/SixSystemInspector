@@ -1,0 +1,35 @@
+# Visual Studio generated files
+.vs/
+*.VC.db
+*.VC.opendb
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+ipch/
+*.obj
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.iobj
+*.ipdb
+*.lib
+*.exp
+*.log
+*.tlog
+*.lastbuildstate
+*.aps
+
+# CMake / misc
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
