@@ -6,10 +6,53 @@
 #include "framework.h"
 #include "MFCApplication1.h"
 #include "MFCApplication1Dlg.h"
+#include <shellapi.h>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
+
+namespace
+{
+	bool TryParseReportCommand(CString& reportType, CString& outputPath, CString& errorMessage, bool& hasReportCommand)
+	{
+		reportType.Empty();
+		outputPath.Empty();
+		errorMessage.Empty();
+		hasReportCommand = false;
+
+		int argc = 0;
+		LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+		if (argv == nullptr || argc <= 1)
+		{
+			if (argv != nullptr)
+			{
+				LocalFree(argv);
+			}
+			return true;
+		}
+
+		const bool reportSwitch = (_wcsicmp(argv[1], L"-Report") == 0);
+		if (!reportSwitch)
+		{
+			LocalFree(argv);
+			return true;
+		}
+
+		hasReportCommand = true;
+		if (argc != 4)
+		{
+			errorMessage = _T("参数格式错误。请使用：-Report SSD|SYSTEM|EDID <FilePath>");
+			LocalFree(argv);
+			return false;
+		}
+
+		reportType = argv[2];
+		outputPath = argv[3];
+		LocalFree(argv);
+		return true;
+	}
+}
 
 
 // CMFCApplication1App
@@ -70,6 +113,33 @@ BOOL CMFCApplication1App::InitInstance()
 	// TODO: 应适当修改该字符串，
 	// 例如修改为公司或组织名
 	SetRegistryKey(_T("Sixunited\\SixSystemInspector"));
+
+	CString reportType;
+	CString reportPath;
+	CString parseError;
+	bool hasReportCommand = false;
+	if (!TryParseReportCommand(reportType, reportPath, parseError, hasReportCommand))
+	{
+		AfxMessageBox(parseError, MB_ICONERROR | MB_OK);
+		return FALSE;
+	}
+	if (hasReportCommand)
+	{
+		CMFCApplication1Dlg reportDlg;
+		CString exportError;
+		if (!reportDlg.ExportReportToFile(reportType, reportPath, exportError))
+		{
+			AfxMessageBox(exportError, MB_ICONERROR | MB_OK);
+			return FALSE;
+		}
+		return FALSE;
+	}
+
+	// 控制台子系统下，普通 UI 模式主动脱离控制台，避免显示额外黑窗。
+	if (GetConsoleWindow() != nullptr)
+	{
+		FreeConsole();
+	}
 
 	CMFCApplication1Dlg dlg;
 	m_pMainWnd = &dlg;

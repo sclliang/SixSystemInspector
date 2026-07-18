@@ -100,9 +100,11 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_WINDOWS;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>$(ProjectDir)AtaSmartCore;$(ProjectDir)AtaSmartCore\Priscilla;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
     </Link>
     <Midl>
@@ -128,9 +130,11 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>$(ProjectDir)AtaSmartCore;$(ProjectDir)AtaSmartCore\Priscilla;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
@@ -156,9 +160,11 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_WINDOWS;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>$(ProjectDir)AtaSmartCore;$(ProjectDir)AtaSmartCore\Priscilla;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
     </Link>
     <Midl>
@@ -184,9 +190,11 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_WINDOWS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>$(ProjectDir)AtaSmartCore;$(ProjectDir)AtaSmartCore\Priscilla;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
+      <EntryPointSymbol>wWinMainCRTStartup</EntryPointSymbol>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
@@ -203,21 +211,53 @@
     </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="AtaSmartCore\AtaSmart.h" />
+    <ClInclude Include="AtaSmartCore\CompileOptions.h" />
+    <ClInclude Include="AtaSmartCore\DnpService.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="AtaSmartCore\JMicronUsbRaidDef.h" />
+    <ClInclude Include="AtaSmartCore\JMicronUsbRaidInit.h" />
     <ClInclude Include="MFCApplication1.h" />
     <ClInclude Include="MFCApplication1Dlg.h" />
+    <ClInclude Include="AtaSmartCore\NVMeInterpreter.h" />
     <ClInclude Include="pch.h" />
+    <ClInclude Include="AtaSmartCore\Priscilla\CommonFx.h" />
+    <ClInclude Include="AtaSmartCore\Priscilla\md5.h" />
+    <ClInclude Include="AtaSmartCore\Priscilla\OsInfoFx.h" />
+    <ClInclude Include="AtaSmartCore\Priscilla\UtilityFx.h" />
     <ClInclude Include="Resource.h" />
+    <ClInclude Include="AtaSmartCore\SlotSpeedGetter.h" />
+    <ClInclude Include="AtaSmartCore\SPTIUtil.h" />
+    <ClInclude Include="AtaSmartCore\stdafx.h" />
+    <ClInclude Include="AtaSmartCore\StorageQuery.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="AtaSmartCore\AtaSmart.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="MFCApplication1.cpp" />
     <ClCompile Include="MFCApplication1Dlg.cpp" />
+    <ClCompile Include="AtaSmartCore\NVMeInterpreter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="AtaSmartCore\Priscilla\md5.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="AtaSmartCore\Priscilla\OsInfoFx.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="AtaSmartCore\Priscilla\UtilityFx.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="AtaSmartCore\SlotSpeedGetter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

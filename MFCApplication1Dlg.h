@@ -49,6 +49,10 @@ protected:
 	afx_msg BOOL OnMouseWheel(UINT nFlags, short zDelta, CPoint pt);
 	// 处理异步加载系统信息消息。
 	afx_msg LRESULT OnLoadSystemInformation(WPARAM wParam, LPARAM lParam);
+	// 处理异步加载 SSD 信息消息。
+	afx_msg LRESULT OnLoadSsdInformation(WPARAM wParam, LPARAM lParam);
+	// 处理异步加载屏幕详情消息。
+	afx_msg LRESULT OnLoadScreenInformation(WPARAM wParam, LPARAM lParam);
 	// 处理控件颜色与背景刷设置。
 	afx_msg HBRUSH OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor);
 	// 处理“应用设置”按钮点击。
@@ -59,6 +63,8 @@ protected:
 	afx_msg void OnBnClickedToggleSelect();
 	// 处理设置项勾选变化。
 	afx_msg void OnSettingsOptionChanged(UINT nID);
+	// 处理 SSD Tab 切换事件。
+	afx_msg void OnTcnSelchangeSsdTab(NMHDR* pNMHDR, LRESULT* pResult);
 	DECLARE_MESSAGE_MAP()
 public:
 	// 初始化页面基础布局参数。
@@ -66,7 +72,7 @@ public:
 	// 按当前窗口大小重新布局。
 	void AdjustLayout(int cx, int cy);
 	// 读取并整理系统信息数据。
-	void LoadSystemInformation();
+	void LoadSystemInformation(bool loadSsdDetails = true);
 	// 向系统信息列表追加一行键值数据。
 	void AddSystemInfoRow(const CString& item, const CString& value);
 	// 确保界面绘制所需字体和画刷已创建。
@@ -75,8 +81,16 @@ public:
 	void DrawRoundedCard(CDC& dc, const CRect& rect, COLORREF fillColor, int radius);
 	// 绘制主界面（根据当前页分发绘制逻辑）。
 	void DrawSystemInformation(CDC& dc, const CRect& clientRect);
+	// 绘制“SSD信息”页面。
+	void DrawSsdInformation(CDC& dc, const CRect& clientRect);
+	// 绘制“屏幕详情”页面。
+	void DrawScreenInformation(CDC& dc, const CRect& clientRect);
 	// 绘制“系统设置”页面。
 	void DrawSystemSettings(CDC& dc, const CRect& clientRect);
+	// 读取并整理屏幕 EDID 详情。
+	void LoadScreenInformation();
+	// 将指定类别的信息导出为报告文件（命令行模式使用）。
+	bool ExportReportToFile(const CString& reportType, const CString& filePath, CString& errorMessage);
 	// 根据内容高度更新垂直滚动条状态。
 	void UpdateVerticalScrollBar(int contentHeight, int viewHeight);
 	// 重新计算侧栏与内容区矩形区域。
@@ -85,6 +99,12 @@ public:
 	void CreateSettingsControls();
 	// 更新设置页控件位置与尺寸。
 	void UpdateSettingsControlLayout();
+	// 动态创建 SSD 页签控件。
+	void CreateSsdControls();
+	// 更新 SSD 页签控件位置与尺寸。
+	void UpdateSsdControlLayout();
+	// 按当前 SSD 数据刷新页签。
+	void RefreshSsdTabs();
 	// 根据当前页切换控件可见性。
 	void UpdatePageVisibility();
 	// 更新状态栏文本内容。
@@ -137,6 +157,10 @@ private:
 
 	// 系统信息数据与绘制资源。
 	std::vector<InfoRow> m_systemRows;
+	std::vector<InfoRow> m_ssdRows;
+	std::vector<InfoRow> m_screenRows;
+	std::vector<std::vector<InfoRow>> m_ssdDiskRows;
+	std::vector<CString> m_ssdTabTitles;
 	CFont m_titleFont;
 	CFont m_subtitleFont;
 	CFont m_labelFont;
@@ -152,6 +176,14 @@ private:
 	CRect m_contentRect;
 	CRect m_infoMenuRect;
 	CRect m_settingsMenuRect;
+	CRect m_ssdMenuRect;
+	CRect m_screenMenuRect;
+	CRect m_ssdTabRect;
+	int m_activeSsdIndex = 0;
+	bool m_ssdLoaded = false;
+	bool m_ssdLoading = false;
+	bool m_screenLoaded = false;
+	bool m_screenLoading = false;
 
 	// 设置页控件集合。
 	CButton m_chkUAC;
@@ -167,4 +199,5 @@ private:
 	CButton m_btnToggleSelect;
 	CStatic m_statusText;
 	CStatic m_adminHintText;
+	CTabCtrl m_ssdTab;
 };
