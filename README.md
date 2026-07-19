@@ -10,6 +10,11 @@ Windows 系统检测与系统设置优化工具（MFC / C++）。
   - 主板 SN、系统 SN、UUID
   - 有线/无线网卡地址、蓝牙地址
 
+- **系统状态**
+  - Windows 版本、Build、系统架构、安装日期、最近启动时间和运行时长
+  - Windows 激活状态、系统语言、时区、Windows 目录
+  - Secure Boot 和 BitLocker 状态
+
 - **SSD 信息**
   - 基于 CAtaSmart 的多盘枚举与 SMART 状态展示
   - 支持按磁盘 Tab 切换
@@ -42,11 +47,13 @@ Windows 系统检测与系统设置优化工具（MFC / C++）。
 ```powershell
 SystemInspector.exe -Report SSD "D:\Temp\ssd-report.txt"
 SystemInspector.exe -Report SYSTEM "D:\Temp\system-report.txt"
+SystemInspector.exe -Report STATUS "D:\Temp\status-report.txt"
 SystemInspector.exe -Report EDID "D:\Temp\edid-report.txt"
 ```
 
 - `SSD`：导出 SSD 信息（多盘分段）
 - `SYSTEM`：导出系统信息
+- `STATUS`：导出系统状态（Windows 版本、激活状态、Secure Boot、BitLocker 等）
 - `EDID`：导出屏幕详情
 - 导出完成后程序才会退出；如在 `cmd` 脚本里串行调用 GUI 程序，请使用 `start "" /wait SystemInspector.exe -Report ...`
 

@@ -63,6 +63,7 @@ namespace
 	constexpr int PAGE_SYSTEM_SETTINGS = 1;
 	constexpr int PAGE_SSD_INFO = 2;
 	constexpr int PAGE_SCREEN_INFO = 3;
+	constexpr int PAGE_SYSTEM_STATUS = 4;
 	constexpr UINT IDC_CHK_UAC = 3001;
 	constexpr UINT IDC_CHK_FIREWALL = 3002;
 	constexpr UINT IDC_CHK_SEC_CENTER = 3003;
@@ -2412,6 +2413,319 @@ namespace
 		}
 		return model;
 	}
+
+	CString ReadRegistryStringValue(HKEY rootKey, const CString& subKey, const CString& valueName)
+	{
+		TCHAR buffer[512] = {};
+		DWORD bufferBytes = sizeof(buffer);
+		const LSTATUS status = RegGetValue(
+			rootKey,
+			subKey,
+			valueName,
+			RRF_RT_REG_SZ,
+			nullptr,
+			buffer,
+			&bufferBytes);
+		return status == ERROR_SUCCESS ? Trimmed(CString(buffer)) : _T("");
+	}
+
+	bool ReadRegistryDwordValue(HKEY rootKey, const CString& subKey, const CString& valueName, DWORD& value)
+	{
+		DWORD valueBytes = sizeof(value);
+		const LSTATUS status = RegGetValue(
+			rootKey,
+			subKey,
+			valueName,
+			RRF_RT_REG_DWORD,
+			nullptr,
+			&value,
+			&valueBytes);
+		return status == ERROR_SUCCESS;
+	}
+
+	bool TryParseWmiDateTime(const CString& wmiDateTime, CTime& time)
+	{
+		const CString value = Trimmed(wmiDateTime);
+		if (value.GetLength() < 14)
+		{
+			return false;
+		}
+
+		const int year = _ttoi(value.Mid(0, 4));
+		const int month = _ttoi(value.Mid(4, 2));
+		const int day = _ttoi(value.Mid(6, 2));
+		const int hour = _ttoi(value.Mid(8, 2));
+		const int minute = _ttoi(value.Mid(10, 2));
+		const int second = _ttoi(value.Mid(12, 2));
+		if (year <= 0 || month <= 0 || day <= 0)
+		{
+			return false;
+		}
+
+		time = CTime(year, month, day, hour, minute, second);
+		return true;
+	}
+
+	CString FormatWmiDateTime(const CString& wmiDateTime)
+	{
+		CTime time;
+		if (!TryParseWmiDateTime(wmiDateTime, time))
+		{
+			return _T("");
+		}
+		return time.Format(_T("%Y-%m-%d %H:%M:%S"));
+	}
+
+	CString FormatUptime(const CString& lastBootWmiDateTime)
+	{
+		CTime bootTime;
+		if (!TryParseWmiDateTime(lastBootWmiDateTime, bootTime))
+		{
+			return _T("");
+		}
+
+		const CTimeSpan uptime = CTime::GetCurrentTime() - bootTime;
+		CString text;
+		text.Format(_T("%lld 天 %02d:%02d:%02d"),
+			static_cast<long long>(uptime.GetDays()),
+			uptime.GetHours(),
+			uptime.GetMinutes(),
+			uptime.GetSeconds());
+		return text;
+	}
+
+	CString FormatUnixTime(DWORD seconds)
+	{
+		if (seconds == 0)
+		{
+			return _T("");
+		}
+		const CTime time(static_cast<__time64_t>(seconds));
+		return time.Format(_T("%Y-%m-%d %H:%M:%S"));
+	}
+
+	CString WindowsLicenseStatusText(const CString& status)
+	{
+		const int value = _ttoi(status);
+		switch (value)
+		{
+		case 0: return _T("未授权");
+		case 1: return _T("已激活");
+		case 2: return _T("OOB 宽限期");
+		case 3: return _T("OOT 宽限期");
+		case 4: return _T("非正版宽限期");
+		case 5: return _T("通知模式");
+		case 6: return _T("扩展宽限期");
+		default: return HasValue(status) ? status : _T("");
+		}
+	}
+
+	CString ResolveWindowsActivationStatus()
+	{
+		const auto rows = QueryWmiRows(
+			_T("ROOT\\CIMV2"),
+			_T("SELECT Name, LicenseStatus, PartialProductKey FROM SoftwareLicensingProduct WHERE PartialProductKey IS NOT NULL"),
+			{ _T("Name"), _T("LicenseStatus"), _T("PartialProductKey") });
+
+		for (const auto& row : rows)
+		{
+			if (row.size() < 3)
+			{
+				continue;
+			}
+
+			const CString nameLower = ToLower(row[0]);
+			if (nameLower.Find(_T("windows")) < 0)
+			{
+				continue;
+			}
+
+			CString text = WindowsLicenseStatusText(row[1]);
+			if (HasValue(row[2]))
+			{
+				text += _T("（尾号 ");
+				text += row[2];
+				text += _T("）");
+			}
+			return text;
+		}
+		return _T("");
+	}
+
+	CString ResolveLocaleText()
+	{
+		WCHAR userLocale[LOCALE_NAME_MAX_LENGTH] = {};
+		WCHAR systemLocale[LOCALE_NAME_MAX_LENGTH] = {};
+		GetUserDefaultLocaleName(userLocale, _countof(userLocale));
+		GetSystemDefaultLocaleName(systemLocale, _countof(systemLocale));
+
+		CString text;
+		if (userLocale[0] != L'\0')
+		{
+			text += _T("用户 ");
+			text += userLocale;
+		}
+		if (systemLocale[0] != L'\0')
+		{
+			if (!text.IsEmpty())
+			{
+				text += _T(" / ");
+			}
+			text += _T("系统 ");
+			text += systemLocale;
+		}
+		return text;
+	}
+
+	CString ResolveTimeZoneText()
+	{
+		DYNAMIC_TIME_ZONE_INFORMATION timeZone = {};
+		const DWORD result = GetDynamicTimeZoneInformation(&timeZone);
+		if (result == TIME_ZONE_ID_INVALID)
+		{
+			return _T("");
+		}
+
+		CString text = HasValue(timeZone.TimeZoneKeyName) ? CString(timeZone.TimeZoneKeyName) : CString(timeZone.StandardName);
+		const LONG biasMinutes = -timeZone.Bias;
+		CString offset;
+		offset.Format(_T("UTC%+03ld:%02ld"), biasMinutes / 60, labs(biasMinutes % 60));
+		if (HasValue(text))
+		{
+			text += _T(" (");
+			text += offset;
+			text += _T(")");
+			return text;
+		}
+		return offset;
+	}
+
+	CString ResolveSecureBootStatus()
+	{
+		DWORD enabled = 0;
+		if (!ReadRegistryDwordValue(
+			HKEY_LOCAL_MACHINE,
+			_T("SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State"),
+			_T("UEFISecureBootEnabled"),
+			enabled))
+		{
+			return _T("不支持或未知");
+		}
+		return enabled != 0 ? _T("已启用") : _T("未启用");
+	}
+
+	CString BitLockerProtectionStatusText(const CString& status)
+	{
+		switch (_ttoi(status))
+		{
+		case 0: return _T("未保护");
+		case 1: return _T("已保护");
+		case 2: return _T("保护未知");
+		default: return HasValue(status) ? status : _T("未知");
+		}
+	}
+
+	CString BitLockerConversionStatusText(const CString& status)
+	{
+		switch (_ttoi(status))
+		{
+		case 0: return _T("完全解密");
+		case 1: return _T("完全加密");
+		case 2: return _T("正在加密");
+		case 3: return _T("正在解密");
+		case 4: return _T("加密暂停");
+		case 5: return _T("解密暂停");
+		default: return HasValue(status) ? status : _T("未知");
+		}
+	}
+
+	CString ResolveBitLockerStatus()
+	{
+		const auto rows = QueryWmiRows(
+			_T("ROOT\\CIMV2\\Security\\MicrosoftVolumeEncryption"),
+			_T("SELECT DriveLetter, ProtectionStatus, ConversionStatus FROM Win32_EncryptableVolume"),
+			{ _T("DriveLetter"), _T("ProtectionStatus"), _T("ConversionStatus") });
+
+		if (rows.empty())
+		{
+			return _T("未检测到或无权限读取");
+		}
+
+		CString text;
+		for (const auto& row : rows)
+		{
+			if (row.size() < 3)
+			{
+				continue;
+			}
+
+			CString line = HasValue(row[0]) ? row[0] : _T("无盘符卷");
+			line += _T("：");
+			line += BitLockerProtectionStatusText(row[1]);
+			line += _T(" / ");
+			line += BitLockerConversionStatusText(row[2]);
+
+			if (!text.IsEmpty())
+			{
+				text += _T("\r\n");
+			}
+			text += line;
+		}
+		return text;
+	}
+
+	CString ResolveWindowsVersionText(const std::vector<CString>& osRow)
+	{
+		CString caption = osRow.size() > 0 ? osRow[0] : _T("");
+		CString version = osRow.size() > 1 ? osRow[1] : _T("");
+		CString build = osRow.size() > 2 ? osRow[2] : _T("");
+		DWORD ubr = 0;
+		ReadRegistryDwordValue(
+			HKEY_LOCAL_MACHINE,
+			_T("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+			_T("UBR"),
+			ubr);
+
+		CString displayVersion = ReadRegistryStringValue(
+			HKEY_LOCAL_MACHINE,
+			_T("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+			_T("DisplayVersion"));
+		CString edition = ReadRegistryStringValue(
+			HKEY_LOCAL_MACHINE,
+			_T("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+			_T("EditionID"));
+
+		CString text;
+		if (HasValue(caption))
+		{
+			text += caption;
+		}
+		if (HasValue(displayVersion))
+		{
+			text += _T(" ");
+			text += displayVersion;
+		}
+		if (HasValue(edition))
+		{
+			text += _T(" (");
+			text += edition;
+			text += _T(")");
+		}
+		if (HasValue(version) || HasValue(build))
+		{
+			text += _T("\r\n版本 ");
+			text += HasValue(version) ? version : _T("N/A");
+			text += _T(" / Build ");
+			text += HasValue(build) ? build : _T("N/A");
+			if (ubr > 0)
+			{
+				CString ubrText;
+				ubrText.Format(_T(".%lu"), ubr);
+				text += ubrText;
+			}
+		}
+		return text;
+	}
 }
 
 // 用于应用程序“关于”菜单项的 CAboutDlg 对话框
@@ -2594,6 +2908,15 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 			Invalidate();
 		}
 	}
+	else if (m_statusMenuRect.PtInRect(point))
+	{
+		if (m_activePage != PAGE_SYSTEM_STATUS)
+		{
+			m_activePage = PAGE_SYSTEM_STATUS;
+			UpdatePageVisibility();
+			Invalidate();
+		}
+	}
 	else if (m_ssdMenuRect.PtInRect(point))
 	{
 		if (m_activePage != PAGE_SSD_INFO)
@@ -2644,6 +2967,7 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 void CMFCApplication1Dlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
 {
 	if (m_activePage != PAGE_SYSTEM_INFO &&
+		m_activePage != PAGE_SYSTEM_STATUS &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
 		m_activePage != PAGE_SCREEN_INFO)
@@ -2712,6 +3036,7 @@ void CMFCApplication1Dlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 BOOL CMFCApplication1Dlg::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
 {
 	if (m_activePage != PAGE_SYSTEM_INFO &&
+		m_activePage != PAGE_SYSTEM_STATUS &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
 		m_activePage != PAGE_SCREEN_INFO)
@@ -2841,6 +3166,7 @@ LRESULT CMFCApplication1Dlg::OnApplyLoadedSystemInformation(WPARAM wParam, LPARA
 	}
 
 	m_systemRows = result->systemRows;
+	m_systemStatusRows = result->systemStatusRows;
 	m_loading = false;
 	if (m_activePage == PAGE_SYSTEM_INFO)
 	{
@@ -2913,6 +3239,7 @@ UINT CMFCApplication1Dlg::LoadSystemInformationThread(LPVOID parameter)
 
 	AsyncLoadResult* result = new AsyncLoadResult;
 	result->systemRows = loader.m_systemRows;
+	result->systemStatusRows = loader.m_systemStatusRows;
 	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_SYSTEM_INFO, result);
 	return 0;
 }
@@ -2966,7 +3293,7 @@ bool CMFCApplication1Dlg::ExportReportToFile(const CString& reportType, const CS
 	{
 		LoadSystemInformation(true);
 	}
-	else if (type == _T("SYSTEM"))
+	else if (type == _T("SYSTEM") || type == _T("STATUS"))
 	{
 		LoadSystemInformation(false);
 	}
@@ -2976,7 +3303,7 @@ bool CMFCApplication1Dlg::ExportReportToFile(const CString& reportType, const CS
 	}
 	else
 	{
-		errorMessage = _T("不支持的报告类型。仅支持：SSD、SYSTEM、EDID。");
+		errorMessage = _T("不支持的报告类型。仅支持：SSD、SYSTEM、STATUS、EDID。");
 		return false;
 	}
 
@@ -3014,6 +3341,16 @@ bool CMFCApplication1Dlg::ExportReportToFile(const CString& reportType, const CS
 	else if (type == _T("SYSTEM"))
 	{
 		for (const auto& row : m_systemRows)
+		{
+			reportText += row.item;
+			reportText += _T(": ");
+			reportText += row.value;
+			reportText += _T("\r\n");
+		}
+	}
+	else if (type == _T("STATUS"))
+	{
+		for (const auto& row : m_systemStatusRows)
 		{
 			reportText += row.item;
 			reportText += _T(": ");
@@ -3092,6 +3429,7 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 {
 	const bool hasWindow = ::IsWindow(GetSafeHwnd());
 	m_systemRows.clear();
+	m_systemStatusRows.clear();
 	m_ssdRows.clear();
 	m_ssdDiskRows.clear();
 	m_ssdTabTitles.clear();
@@ -3134,6 +3472,11 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	const CString wirelessMac = ResolveMacAddress(true);
 	const CString bluetoothAddress = ResolveBluetoothAddress();
 	const CString tpmModel = ResolveTpmModel();
+	const auto osRows = QueryWmiRows(
+		_T("ROOT\\CIMV2"),
+		_T("SELECT Caption, Version, BuildNumber, OSArchitecture, InstallDate, LastBootUpTime, WindowsDirectory FROM Win32_OperatingSystem"),
+		{ _T("Caption"), _T("Version"), _T("BuildNumber"), _T("OSArchitecture"), _T("InstallDate"), _T("LastBootUpTime"), _T("WindowsDirectory") });
+	const std::vector<CString> osRow = osRows.empty() ? std::vector<CString>() : osRows.front();
 	const auto diskRows = QueryWmiRows(
 		_T("ROOT\\CIMV2"),
 		_T("SELECT Model, Size, MediaType, InterfaceType, SerialNumber, FirmwareRevision, Status, PNPDeviceID, DeviceID FROM Win32_DiskDrive"),
@@ -3172,6 +3515,22 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	AddSystemInfoRow(_T("无线网卡地址"), wirelessMac);
 	AddSystemInfoRow(_T("蓝牙地址"), bluetoothAddress);
 	AddSystemInfoRow(_T("TPM型号"), tpmModel);
+
+	auto addSystemStatusRow = [this](const CString& item, const CString& value)
+		{
+			m_systemStatusRows.push_back({ item, HasValue(value) ? NormalizeMultilineValue(value) : _T("N/A") });
+		};
+	addSystemStatusRow(_T("Windows版本"), ResolveWindowsVersionText(osRow));
+	addSystemStatusRow(_T("系统架构"), osRow.size() > 3 ? osRow[3] : _T(""));
+	addSystemStatusRow(_T("安装日期"), osRow.size() > 4 ? FormatWmiDateTime(osRow[4]) : _T(""));
+	addSystemStatusRow(_T("最近启动时间"), osRow.size() > 5 ? FormatWmiDateTime(osRow[5]) : _T(""));
+	addSystemStatusRow(_T("运行时长"), osRow.size() > 5 ? FormatUptime(osRow[5]) : _T(""));
+	addSystemStatusRow(_T("激活状态"), ResolveWindowsActivationStatus());
+	addSystemStatusRow(_T("系统语言"), ResolveLocaleText());
+	addSystemStatusRow(_T("时区"), ResolveTimeZoneText());
+	addSystemStatusRow(_T("Windows目录"), osRow.size() > 6 ? osRow[6] : _T(""));
+	addSystemStatusRow(_T("Secure Boot"), ResolveSecureBootStatus());
+	addSystemStatusRow(_T("BitLocker"), ResolveBitLockerStatus());
 
 	// 启动时先加载基础信息，SSD 重采集延后到用户进入 SSD 页再执行，避免首屏卡顿感。
 	if (!loadSsdDetails)
@@ -3710,11 +4069,13 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	const COLORREF unselectedColor = UiSurfaceAlt;
 
 	DrawRoundedCard(memDc, m_infoMenuRect, m_activePage == PAGE_SYSTEM_INFO ? selectedColor : unselectedColor, 10);
+	DrawRoundedCard(memDc, m_statusMenuRect, m_activePage == PAGE_SYSTEM_STATUS ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_settingsMenuRect, m_activePage == PAGE_SYSTEM_SETTINGS ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_ssdMenuRect, m_activePage == PAGE_SSD_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_screenMenuRect, m_activePage == PAGE_SCREEN_INFO ? selectedColor : unselectedColor, 10);
 
 	if (m_activePage == PAGE_SYSTEM_INFO) DrawAccentStrip(memDc, m_infoMenuRect, UiAccent);
+	if (m_activePage == PAGE_SYSTEM_STATUS) DrawAccentStrip(memDc, m_statusMenuRect, UiAccent);
 	if (m_activePage == PAGE_SYSTEM_SETTINGS) DrawAccentStrip(memDc, m_settingsMenuRect, UiAccent);
 	if (m_activePage == PAGE_SSD_INFO) DrawAccentStrip(memDc, m_ssdMenuRect, UiAccent);
 	if (m_activePage == PAGE_SCREEN_INFO) DrawAccentStrip(memDc, m_screenMenuRect, UiAccent);
@@ -3730,6 +4091,11 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	menuTextRect.right -= 12;
 	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_INFO ? UiText : UiSecondaryText);
 	memDc.DrawText(_T("系统信息"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_statusMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_STATUS ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("系统状态"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 	menuTextRect = m_settingsMenuRect;
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
@@ -3749,6 +4115,10 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	if (m_activePage == PAGE_SYSTEM_SETTINGS)
 	{
 		DrawSystemSettings(memDc, clientRect);
+	}
+	else if (m_activePage == PAGE_SYSTEM_STATUS)
+	{
+		DrawSystemStatus(memDc, clientRect);
 	}
 	else if (m_activePage == PAGE_SSD_INFO)
 	{
@@ -4039,6 +4409,104 @@ void CMFCApplication1Dlg::DrawScreenInformation(CDC& dc, const CRect& clientRect
 	dc.RestoreDC(oldDc);
 }
 
+void CMFCApplication1Dlg::DrawSystemStatus(CDC& dc, const CRect& clientRect)
+{
+	UNREFERENCED_PARAMETER(clientRect);
+
+	CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
+	CRect listRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
+	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
+	DrawRoundedCard(dc, listRect, UiSurface, 12, UiBorder);
+
+	dc.SelectObject(&m_titleFont);
+	dc.SetTextColor(UiText);
+	CRect titleRect(headerRect.left + 18, headerRect.top + 10, headerRect.right - 16, headerRect.top + 42);
+	dc.DrawText(_T("系统状态"), titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+	dc.SelectObject(&m_subtitleFont);
+	dc.SetTextColor(UiSecondaryText);
+	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 16, headerRect.bottom - 8);
+	dc.DrawText(_T("查看 Windows 版本、激活、安全启动和磁盘加密状态"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+	const int labelX = listRect.left + 16;
+	const int labelWidth = 178;
+	const int valueX = labelX + labelWidth + 34;
+	const int contentTop = listRect.top + 14;
+	const int contentBottom = listRect.bottom - 12;
+	const int contentWidth = (listRect.right - 16) - valueX;
+	const int valueRight = valueX + contentWidth;
+
+	TEXTMETRIC labelTm = {};
+	dc.SelectObject(&m_labelFont);
+	dc.GetTextMetrics(&labelTm);
+	const int labelLineHeight = max(static_cast<int>(labelTm.tmHeight + labelTm.tmExternalLeading), 24);
+
+	TEXTMETRIC valueTm = {};
+	dc.SelectObject(&m_valueFont);
+	dc.GetTextMetrics(&valueTm);
+	const int valueLineHeight = max(static_cast<int>(valueTm.tmHeight + valueTm.tmExternalLeading), 24);
+	const int rowPadding = 8;
+	const int rowGap = 10;
+
+	std::vector<int> rowHeights;
+	rowHeights.reserve(m_systemStatusRows.size());
+	int totalHeight = 14;
+	for (const InfoRow& row : m_systemStatusRows)
+	{
+		CRect calcRect(0, 0, max(contentWidth, 80), 0);
+		dc.SelectObject(&m_valueFont);
+		dc.DrawText(row.value, calcRect, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+		const int valueHeight = max(valueLineHeight, calcRect.Height());
+		const int rowHeight = max(labelLineHeight, valueHeight) + rowPadding;
+		rowHeights.push_back(rowHeight);
+		totalHeight += rowHeight + rowGap;
+	}
+	totalHeight += 10;
+	UpdateVerticalScrollBar(totalHeight, max(1, listRect.Height() - 4));
+
+	int y = contentTop - m_scrollPos;
+	const int oldDc = dc.SaveDC();
+	dc.IntersectClipRect(listRect.left + 6, listRect.top + 6, listRect.right - 6, listRect.bottom - 6);
+
+	if (m_systemStatusRows.empty())
+	{
+		dc.SelectObject(&m_valueFont);
+		dc.SetTextColor(UiSecondaryText);
+		dc.TextOutW(labelX, y, _T("正在加载系统状态，请稍候..."));
+	}
+	else
+	{
+		for (size_t i = 0; i < m_systemStatusRows.size(); ++i)
+		{
+			const InfoRow& row = m_systemStatusRows[i];
+			const int rowHeight = i < rowHeights.size() ? rowHeights[i] : (labelLineHeight + rowPadding);
+			dc.SelectObject(&m_labelFont);
+			dc.SetTextColor(UiTertiaryText);
+			CRect labelRect(labelX, y, labelX + labelWidth, y + rowHeight);
+			dc.DrawText(row.item, labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+			dc.SelectObject(&m_valueFont);
+			dc.SetTextColor(UiText);
+			CRect valueRect(valueX, y + 1, valueRight, y + rowHeight);
+			dc.DrawText(row.value, valueRect, DT_LEFT | DT_WORDBREAK);
+
+			CPen linePen(PS_SOLID, 1, UiBorder);
+			CPen* oldLinePen = dc.SelectObject(&linePen);
+			const int separatorY = y + rowHeight + (rowGap / 2);
+			dc.MoveTo(labelX, separatorY);
+			dc.LineTo(valueRight, separatorY);
+			dc.SelectObject(oldLinePen);
+
+			y += rowHeight + rowGap;
+			if (y > contentBottom + 20)
+			{
+				break;
+			}
+		}
+	}
+	dc.RestoreDC(oldDc);
+}
+
 // 绘制系统设置页背景卡片与分组标题。
 void CMFCApplication1Dlg::DrawSystemSettings(CDC& dc, const CRect& clientRect)
 {
@@ -4169,7 +4637,8 @@ void CMFCApplication1Dlg::RecalcLayoutRects(const CRect& clientRect)
 	m_sideRect = CRect(margin, margin, margin + sideWidth, clientRect.bottom - margin);
 	m_contentRect = CRect(m_sideRect.right + 12, margin, clientRect.right - margin, clientRect.bottom - margin);
 	m_infoMenuRect = CRect(m_sideRect.left + 10, m_sideRect.top + 54, m_sideRect.right - 10, m_sideRect.top + 102);
-	m_ssdMenuRect = CRect(m_sideRect.left + 10, m_infoMenuRect.bottom + 10, m_sideRect.right - 10, m_infoMenuRect.bottom + 62);
+	m_statusMenuRect = CRect(m_sideRect.left + 10, m_infoMenuRect.bottom + 10, m_sideRect.right - 10, m_infoMenuRect.bottom + 62);
+	m_ssdMenuRect = CRect(m_sideRect.left + 10, m_statusMenuRect.bottom + 10, m_sideRect.right - 10, m_statusMenuRect.bottom + 62);
 	m_screenMenuRect = CRect(m_sideRect.left + 10, m_ssdMenuRect.bottom + 10, m_sideRect.right - 10, m_ssdMenuRect.bottom + 62);
 	m_settingsMenuRect = CRect(m_sideRect.left + 10, m_screenMenuRect.bottom + 10, m_sideRect.right - 10, m_screenMenuRect.bottom + 62);
 }
@@ -4374,6 +4843,7 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	const int settingsCmd = showSettings ? SW_SHOW : SW_HIDE;
 	const bool showSsd = (m_activePage == PAGE_SSD_INFO);
 	const bool showScreen = (m_activePage == PAGE_SCREEN_INFO);
+	const bool showStatus = (m_activePage == PAGE_SYSTEM_STATUS);
 	for (CButton* checkBox : GetOptionCheckBoxes())
 	{
 		if (::IsWindow(checkBox->GetSafeHwnd()))
@@ -4408,6 +4878,10 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 		RefreshSsdTabs();
 	}
 	else if (showScreen)
+	{
+		m_scrollPos = 0;
+	}
+	else if (showStatus)
 	{
 		m_scrollPos = 0;
 	}
