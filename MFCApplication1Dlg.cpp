@@ -96,6 +96,10 @@ namespace
 	constexpr UINT IDC_STARTUP_DELETE = 3029;
 	constexpr UINT IDC_STARTUP_NAME_LABEL = 3030;
 	constexpr UINT IDC_STARTUP_PATH_LABEL = 3031;
+	constexpr UINT ID_STARTUP_MENU_ENABLE = 3040;
+	constexpr UINT ID_STARTUP_MENU_DISABLE = 3041;
+	constexpr UINT ID_STARTUP_MENU_DELETE = 3042;
+	constexpr UINT ID_STARTUP_MENU_REFRESH = 3043;
 	constexpr UINT IDC_OPTIONS_START = IDC_CHK_UAC;
 	constexpr UINT IDC_OPTIONS_END = IDC_CHK_WINDOWS_UPDATE;
 	const COLORREF UiBackground = RGB(243, 243, 243);
@@ -3054,6 +3058,68 @@ namespace
 			: _T("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
 	}
 
+	CString StartupApprovedSubKey(const CString& approvedKey)
+	{
+		return _T("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\") + approvedKey;
+	}
+
+	bool ReadStartupApprovedEnabled(HKEY rootKey, const CString& approvedKey, const CString& valueName, bool& enabled)
+	{
+		HKEY key = nullptr;
+		if (RegOpenKeyEx(rootKey, StartupApprovedSubKey(approvedKey), 0, KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
+		{
+			return false;
+		}
+
+		BYTE data[32] = {};
+		DWORD dataBytes = sizeof(data);
+		DWORD type = 0;
+		const LSTATUS status = RegQueryValueEx(key, valueName, nullptr, &type, data, &dataBytes);
+		RegCloseKey(key);
+		if (status != ERROR_SUCCESS || type != REG_BINARY || dataBytes == 0)
+		{
+			return false;
+		}
+
+		if (data[0] == 0x02)
+		{
+			enabled = true;
+			return true;
+		}
+		if (data[0] == 0x03)
+		{
+			enabled = false;
+			return true;
+		}
+		return false;
+	}
+
+	bool WriteStartupApprovedEnabled(HKEY rootKey, const CString& approvedKey, const CString& valueName, bool enabled)
+	{
+		HKEY key = nullptr;
+		if (RegCreateKeyEx(rootKey, StartupApprovedSubKey(approvedKey), 0, nullptr, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &key, nullptr) != ERROR_SUCCESS)
+		{
+			return false;
+		}
+
+		BYTE data[12] = {};
+		data[0] = enabled ? 0x02 : 0x03;
+		const bool ok = RegSetValueEx(key, valueName, 0, REG_BINARY, data, sizeof(data)) == ERROR_SUCCESS;
+		RegCloseKey(key);
+		return ok;
+	}
+
+	void DeleteStartupApprovedValue(HKEY rootKey, const CString& approvedKey, const CString& valueName)
+	{
+		HKEY key = nullptr;
+		if (RegOpenKeyEx(rootKey, StartupApprovedSubKey(approvedKey), 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
+		{
+			return;
+		}
+		RegDeleteValue(key, valueName);
+		RegCloseKey(key);
+	}
+
 	CString KnownFolderPath(REFKNOWNFOLDERID folderId)
 	{
 		PWSTR path = nullptr;
@@ -3310,6 +3376,8 @@ BEGIN_MESSAGE_MAP(CMFCApplication1Dlg, CDialogEx)
 	ON_COMMAND_RANGE(IDC_OPTIONS_START, IDC_OPTIONS_END, &CMFCApplication1Dlg::OnSettingsOptionChanged)
 	ON_NOTIFY(TCN_SELCHANGE, IDC_SSD_TAB, &CMFCApplication1Dlg::OnTcnSelchangeSsdTab)
 	ON_NOTIFY(LVN_ITEMCHANGED, IDC_STARTUP_LIST, &CMFCApplication1Dlg::OnLvnItemchangedStartupList)
+	ON_NOTIFY(NM_RCLICK, IDC_STARTUP_LIST, &CMFCApplication1Dlg::OnNMRClickStartupList)
+	ON_NOTIFY(NM_CUSTOMDRAW, IDC_STARTUP_LIST, &CMFCApplication1Dlg::OnNMCustomdrawStartupList)
 END_MESSAGE_MAP()
 
 // 初始化主对话框：菜单、图标、布局与异步加载入口。
@@ -4663,6 +4731,10 @@ void CMFCApplication1Dlg::EnsureUiFonts()
 	{
 		m_settingsFont.CreatePointFont(98, _T("Microsoft YaHei UI"));
 	}
+	if (m_startupListFont.GetSafeHandle() == nullptr)
+	{
+		m_startupListFont.CreatePointFont(110, _T("Microsoft YaHei UI"));
+	}
 	if (m_uiBackgroundBrush.GetSafeHandle() == nullptr)
 	{
 		m_uiBackgroundBrush.CreateSolidBrush(UiBackground);
@@ -5167,7 +5239,7 @@ void CMFCApplication1Dlg::DrawStartupItems(CDC& dc, const CRect& clientRect)
 {
 	UNREFERENCED_PARAMETER(clientRect);
 
-	const int actionHeight = 248;
+	const int actionHeight = 156;
 	const CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
 	const CRect listCardRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - actionHeight - 16);
 	const CRect actionCardRect(m_contentRect.left + 8, listCardRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
@@ -5183,7 +5255,7 @@ void CMFCApplication1Dlg::DrawStartupItems(CDC& dc, const CRect& clientRect)
 	dc.SelectObject(&m_subtitleFont);
 	dc.SetTextColor(UiSecondaryText);
 	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 16, headerRect.bottom - 8);
-	dc.DrawText(_T("查看开机自动启动项目，并启用、禁用或添加当前用户启动项"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+	dc.DrawText(_T("查看开机自动启动项目，右键启动项可启用、禁用、删除或刷新"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 
 	UpdateVerticalScrollBar(max(1, m_contentRect.Height()), max(1, m_contentRect.Height()));
 }
@@ -5484,7 +5556,12 @@ void CMFCApplication1Dlg::CreateStartupControls()
 	m_startupList.Create(WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
 		CRect(0, 0, 10, 10), this, IDC_STARTUP_LIST);
 	m_startupList.SetExtendedStyle(LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_LABELTIP | LVS_EX_DOUBLEBUFFER);
-	m_startupList.SetFont(&m_settingsFont);
+	m_startupList.SetFont(&m_startupListFont);
+	if (m_startupRowImageList.GetSafeHandle() == nullptr)
+	{
+		m_startupRowImageList.Create(1, 34, ILC_COLOR32, 1, 1);
+		m_startupList.SetImageList(&m_startupRowImageList, LVSIL_SMALL);
+	}
 	m_startupList.InsertColumn(0, _T("名称"), LVCFMT_LEFT, 180);
 	m_startupList.InsertColumn(1, _T("状态"), LVCFMT_LEFT, 104);
 	m_startupList.InsertColumn(2, _T("来源"), LVCFMT_LEFT, 210);
@@ -5576,7 +5653,7 @@ void CMFCApplication1Dlg::UpdateStartupControlLayout()
 		return;
 	}
 
-	const int actionHeight = 248;
+	const int actionHeight = 156;
 	const CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
 	const CRect listCardRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - actionHeight - 16);
 	const CRect actionCardRect(m_contentRect.left + 8, listCardRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
@@ -5590,17 +5667,15 @@ void CMFCApplication1Dlg::UpdateStartupControlLayout()
 
 	const int actionLeft = actionCardRect.left + inner;
 	const int actionRight = actionCardRect.right - inner;
-	const int firstRowTop = actionCardRect.top + 12;
-	const int buttonWidth = 92;
-	m_btnStartupEnable.MoveWindow(actionLeft, firstRowTop, buttonWidth, buttonHeight, TRUE);
-	m_btnStartupDisable.MoveWindow(actionLeft + buttonWidth + gap, firstRowTop, buttonWidth, buttonHeight, TRUE);
-	m_btnStartupDelete.MoveWindow(actionLeft + (buttonWidth + gap) * 2, firstRowTop, buttonWidth, buttonHeight, TRUE);
-	m_btnStartupRefresh.MoveWindow(actionLeft + (buttonWidth + gap) * 3, firstRowTop, buttonWidth, buttonHeight, TRUE);
-	const int statusLeft = actionLeft + (buttonWidth + gap) * 4 + 18;
-	m_startupStatusText.MoveWindow(statusLeft, firstRowTop, max(180, actionRight - statusLeft), buttonHeight, TRUE);
+	const int firstRowTop = actionCardRect.top + 10;
+	m_btnStartupEnable.MoveWindow(0, 0, 0, 0, TRUE);
+	m_btnStartupDisable.MoveWindow(0, 0, 0, 0, TRUE);
+	m_btnStartupDelete.MoveWindow(0, 0, 0, 0, TRUE);
+	m_btnStartupRefresh.MoveWindow(0, 0, 0, 0, TRUE);
+	m_startupStatusText.MoveWindow(actionLeft, firstRowTop, max(180, actionRight - actionLeft), buttonHeight, TRUE);
 
-	const int labelTop = actionCardRect.top + 100;
-	const int secondRowTop = actionCardRect.top + 142;
+	const int labelTop = actionCardRect.top + 58;
+	const int secondRowTop = actionCardRect.top + 92;
 	const int addButtonWidth = 118;
 	const int browseWidth = 72;
 	const int nameWidth = max(220, min(320, (actionCardRect.Width() - inner * 2) / 4));
@@ -5624,11 +5699,40 @@ void CMFCApplication1Dlg::LoadStartupItems()
 {
 	m_startupItems.clear();
 
-	auto addRegistryItems = [this](HKEY rootKey, bool disabled, const CString& label, StartupSource source)
+	auto startupItemExists = [this](const StartupItem& item) -> bool
+		{
+			const CString itemName = ToLower(Trimmed(item.name));
+			const CString itemCommand = ToLower(Trimmed(item.command));
+			for (const StartupItem& existing : m_startupItems)
+			{
+				if (ToLower(Trimmed(existing.name)) == itemName &&
+					ToLower(Trimmed(existing.command)) == itemCommand)
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+	auto startupApprovedRecordExists = [this](HKEY rootKey, const CString& approvedKey, const CString& valueName) -> bool
+		{
+			for (const StartupItem& existing : m_startupItems)
+			{
+				if (existing.approvedRoot == rootKey &&
+					existing.approvedSubKey.CompareNoCase(approvedKey) == 0 &&
+					existing.name.CompareNoCase(valueName) == 0)
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+	auto addRegistryItems = [this, &startupItemExists](HKEY rootKey, REGSAM viewFlag, bool disabled, const CString& approvedKey, const CString& label, StartupSource source)
 		{
 			HKEY key = nullptr;
 			const CString subKey = StartupRunSubKey(disabled);
-			if (RegOpenKeyEx(rootKey, subKey, 0, KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
+			if (RegOpenKeyEx(rootKey, subKey, 0, KEY_READ | viewFlag, &key) != ERROR_SUCCESS)
 			{
 				return;
 			}
@@ -5659,17 +5763,37 @@ void CMFCApplication1Dlg::LoadStartupItems()
 				item.location = subKey;
 				item.source = source;
 				item.enabled = !disabled;
+				item.approvedRoot = rootKey;
+				item.approvedSubKey = approvedKey;
+				if (!disabled)
+				{
+					bool approvedEnabled = true;
+					if (ReadStartupApprovedEnabled(rootKey, approvedKey, item.name, approvedEnabled))
+					{
+						item.enabled = approvedEnabled;
+						if (!approvedEnabled)
+						{
+							item.sourceLabel = label;
+						}
+					}
+				}
+				if (startupItemExists(item))
+				{
+					continue;
+				}
 				m_startupItems.push_back(item);
 			}
 			RegCloseKey(key);
 		};
 
-	addRegistryItems(HKEY_CURRENT_USER, false, _T("当前用户 Run"), StartupSource::HkcuRun);
-	addRegistryItems(HKEY_LOCAL_MACHINE, false, _T("所有用户 Run"), StartupSource::HklmRun);
-	addRegistryItems(HKEY_CURRENT_USER, true, _T("当前用户 Run（已禁用）"), StartupSource::HkcuRunDisabled);
-	addRegistryItems(HKEY_LOCAL_MACHINE, true, _T("所有用户 Run（已禁用）"), StartupSource::HklmRunDisabled);
+	addRegistryItems(HKEY_CURRENT_USER, KEY_WOW64_64KEY, false, _T("Run"), _T("当前用户 Run"), StartupSource::HkcuRun);
+	addRegistryItems(HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY, false, _T("Run"), _T("所有用户 Run"), StartupSource::HklmRun);
+	addRegistryItems(HKEY_CURRENT_USER, KEY_WOW64_32KEY, false, _T("Run32"), _T("当前用户 Run32"), StartupSource::HkcuRun32);
+	addRegistryItems(HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, false, _T("Run32"), _T("所有用户 Run32"), StartupSource::HklmRun32);
+	addRegistryItems(HKEY_CURRENT_USER, KEY_WOW64_64KEY, true, _T("Run"), _T("当前用户 Run（已禁用）"), StartupSource::HkcuRunDisabled);
+	addRegistryItems(HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY, true, _T("Run"), _T("所有用户 Run（已禁用）"), StartupSource::HklmRunDisabled);
 
-	auto addFolderItems = [this](const CString& folder, const CString& label, StartupSource enabledSource, StartupSource disabledSource)
+	auto addFolderItems = [this, &startupItemExists](const CString& folder, const CString& label, StartupSource enabledSource, StartupSource disabledSource)
 		{
 			if (folder.IsEmpty() || !PathFileExists(folder))
 			{
@@ -5695,6 +5819,10 @@ void CMFCApplication1Dlg::LoadStartupItems()
 				item.disabledLocation = EnsureUniqueFilePath(disabledFolder, item.name);
 				item.source = enabledSource;
 				item.enabled = true;
+				if (startupItemExists(item))
+				{
+					continue;
+				}
 				m_startupItems.push_back(item);
 			}
 			finder.Close();
@@ -5722,6 +5850,10 @@ void CMFCApplication1Dlg::LoadStartupItems()
 				item.disabledLocation = EnsureUniqueFilePath(folder, item.name);
 				item.source = disabledSource;
 				item.enabled = false;
+				if (startupItemExists(item))
+				{
+					continue;
+				}
 				m_startupItems.push_back(item);
 			}
 			disabledFinder.Close();
@@ -5729,6 +5861,64 @@ void CMFCApplication1Dlg::LoadStartupItems()
 
 	addFolderItems(KnownFolderPath(FOLDERID_Startup), _T("当前用户启动文件夹"), StartupSource::UserStartupFolder, StartupSource::UserStartupFolderDisabled);
 	addFolderItems(KnownFolderPath(FOLDERID_CommonStartup), _T("所有用户启动文件夹"), StartupSource::CommonStartupFolder, StartupSource::CommonStartupFolderDisabled);
+
+	auto addApprovedOnlyItems = [this, &startupItemExists, &startupApprovedRecordExists](HKEY rootKey, const CString& approvedKey, const CString& label)
+		{
+			HKEY key = nullptr;
+			if (RegOpenKeyEx(rootKey, StartupApprovedSubKey(approvedKey), 0, KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
+			{
+				return;
+			}
+
+			DWORD index = 0;
+			for (;;)
+			{
+				TCHAR valueName[512] = {};
+				BYTE data[32] = {};
+				DWORD valueNameChars = _countof(valueName);
+				DWORD dataBytes = sizeof(data);
+				DWORD type = 0;
+				const LSTATUS status = RegEnumValue(key, index, valueName, &valueNameChars, nullptr, &type, data, &dataBytes);
+				if (status == ERROR_NO_MORE_ITEMS)
+				{
+					break;
+				}
+				++index;
+				if (status != ERROR_SUCCESS || type != REG_BINARY || dataBytes == 0)
+				{
+					continue;
+				}
+				if (startupApprovedRecordExists(rootKey, approvedKey, valueName))
+				{
+					continue;
+				}
+
+				StartupItem item;
+				item.name = valueName;
+				item.command = _T("N/A");
+				item.sourceLabel = label;
+				item.source = StartupSource::ApprovedOnly;
+				item.approvedOnly = true;
+				item.approvedRoot = rootKey;
+				item.approvedSubKey = approvedKey;
+				item.enabled = data[0] != 0x03;
+				if (!HasDisplayValue(item.command))
+				{
+					continue;
+				}
+				if (startupItemExists(item))
+				{
+					continue;
+				}
+				m_startupItems.push_back(item);
+			}
+			RegCloseKey(key);
+		};
+
+	addApprovedOnlyItems(HKEY_CURRENT_USER, _T("StartupFolder"), _T("当前用户启动文件夹"));
+	addApprovedOnlyItems(HKEY_LOCAL_MACHINE, _T("StartupFolder"), _T("所有用户启动文件夹"));
+	addApprovedOnlyItems(HKEY_CURRENT_USER, _T("StartupTasks"), _T("当前用户 StartupTasks"));
+	addApprovedOnlyItems(HKEY_LOCAL_MACHINE, _T("StartupTasks"), _T("所有用户 StartupTasks"));
 	RefreshStartupList();
 }
 
@@ -5838,16 +6028,28 @@ bool CMFCApplication1Dlg::SetSelectedStartupItemEnabled(bool enable)
 	switch (item.source)
 	{
 	case StartupSource::HkcuRun:
-		ok = moveRegistryValue(HKEY_CURRENT_USER, StartupRunSubKey(false), StartupRunSubKey(true), item.name);
-		break;
 	case StartupSource::HklmRun:
-		ok = moveRegistryValue(HKEY_LOCAL_MACHINE, StartupRunSubKey(false), StartupRunSubKey(true), item.name);
+	case StartupSource::HkcuRun32:
+	case StartupSource::HklmRun32:
+	case StartupSource::ApprovedOnly:
+		if (item.approvedRoot != nullptr && HasValue(item.approvedSubKey))
+		{
+			ok = WriteStartupApprovedEnabled(item.approvedRoot, item.approvedSubKey, item.name, enable);
+		}
 		break;
 	case StartupSource::HkcuRunDisabled:
 		ok = moveRegistryValue(HKEY_CURRENT_USER, StartupRunSubKey(true), StartupRunSubKey(false), item.name);
+		if (ok)
+		{
+			WriteStartupApprovedEnabled(HKEY_CURRENT_USER, _T("Run"), item.name, true);
+		}
 		break;
 	case StartupSource::HklmRunDisabled:
 		ok = moveRegistryValue(HKEY_LOCAL_MACHINE, StartupRunSubKey(true), StartupRunSubKey(false), item.name);
+		if (ok)
+		{
+			WriteStartupApprovedEnabled(HKEY_LOCAL_MACHINE, _T("Run"), item.name, true);
+		}
 		break;
 	case StartupSource::UserStartupFolder:
 	case StartupSource::CommonStartupFolder:
@@ -5891,10 +6093,10 @@ bool CMFCApplication1Dlg::DeleteSelectedStartupItem()
 		return false;
 	}
 
-	auto deleteRegistryValue = [](HKEY rootKey, const CString& subKey, const CString& valueName) -> bool
+	auto deleteRegistryValue = [](HKEY rootKey, REGSAM viewFlag, const CString& subKey, const CString& valueName) -> bool
 		{
 			HKEY key = nullptr;
-			if (RegOpenKeyEx(rootKey, subKey, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
+			if (RegOpenKeyEx(rootKey, subKey, 0, KEY_SET_VALUE | viewFlag, &key) != ERROR_SUCCESS)
 			{
 				return false;
 			}
@@ -5907,16 +6109,35 @@ bool CMFCApplication1Dlg::DeleteSelectedStartupItem()
 	switch (item.source)
 	{
 	case StartupSource::HkcuRun:
-		ok = deleteRegistryValue(HKEY_CURRENT_USER, StartupRunSubKey(false), item.name);
+		ok = deleteRegistryValue(HKEY_CURRENT_USER, KEY_WOW64_64KEY, StartupRunSubKey(false), item.name);
+		DeleteStartupApprovedValue(HKEY_CURRENT_USER, _T("Run"), item.name);
 		break;
 	case StartupSource::HklmRun:
-		ok = deleteRegistryValue(HKEY_LOCAL_MACHINE, StartupRunSubKey(false), item.name);
+		ok = deleteRegistryValue(HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY, StartupRunSubKey(false), item.name);
+		DeleteStartupApprovedValue(HKEY_LOCAL_MACHINE, _T("Run"), item.name);
+		break;
+	case StartupSource::HkcuRun32:
+		ok = deleteRegistryValue(HKEY_CURRENT_USER, KEY_WOW64_32KEY, StartupRunSubKey(false), item.name);
+		DeleteStartupApprovedValue(HKEY_CURRENT_USER, _T("Run32"), item.name);
+		break;
+	case StartupSource::HklmRun32:
+		ok = deleteRegistryValue(HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, StartupRunSubKey(false), item.name);
+		DeleteStartupApprovedValue(HKEY_LOCAL_MACHINE, _T("Run32"), item.name);
 		break;
 	case StartupSource::HkcuRunDisabled:
-		ok = deleteRegistryValue(HKEY_CURRENT_USER, StartupRunSubKey(true), item.name);
+		ok = deleteRegistryValue(HKEY_CURRENT_USER, KEY_WOW64_64KEY, StartupRunSubKey(true), item.name);
+		DeleteStartupApprovedValue(HKEY_CURRENT_USER, _T("Run"), item.name);
 		break;
 	case StartupSource::HklmRunDisabled:
-		ok = deleteRegistryValue(HKEY_LOCAL_MACHINE, StartupRunSubKey(true), item.name);
+		ok = deleteRegistryValue(HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY, StartupRunSubKey(true), item.name);
+		DeleteStartupApprovedValue(HKEY_LOCAL_MACHINE, _T("Run"), item.name);
+		break;
+	case StartupSource::ApprovedOnly:
+		if (item.approvedRoot != nullptr && HasValue(item.approvedSubKey))
+		{
+			DeleteStartupApprovedValue(item.approvedRoot, item.approvedSubKey, item.name);
+			ok = true;
+		}
 		break;
 	case StartupSource::UserStartupFolder:
 	case StartupSource::CommonStartupFolder:
@@ -5976,6 +6197,7 @@ bool CMFCApplication1Dlg::AddStartupItem(const CString& name, const CString& com
 		errorMessage = _T("写入启动项失败。");
 		return false;
 	}
+	WriteStartupApprovedEnabled(HKEY_CURRENT_USER, _T("Run"), itemName, true);
 	return true;
 }
 
@@ -6103,10 +6325,10 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	if (::IsWindow(m_startupList.GetSafeHwnd()))
 	{
 		m_startupList.ShowWindow(startupCmd);
-		m_btnStartupEnable.ShowWindow(startupCmd);
-		m_btnStartupDisable.ShowWindow(startupCmd);
-		m_btnStartupDelete.ShowWindow(startupCmd);
-		m_btnStartupRefresh.ShowWindow(startupCmd);
+		m_btnStartupEnable.ShowWindow(SW_HIDE);
+		m_btnStartupDisable.ShowWindow(SW_HIDE);
+		m_btnStartupDelete.ShowWindow(SW_HIDE);
+		m_btnStartupRefresh.ShowWindow(SW_HIDE);
 		m_labelStartupName.ShowWindow(startupCmd);
 		m_labelStartupPath.ShowWindow(startupCmd);
 		m_editStartupName.ShowWindow(startupCmd);
@@ -6168,6 +6390,94 @@ void CMFCApplication1Dlg::OnLvnItemchangedStartupList(NMHDR* pNMHDR, LRESULT* pR
 	UNREFERENCED_PARAMETER(pNMHDR);
 	UpdateStartupButtons();
 	*pResult = 0;
+}
+
+void CMFCApplication1Dlg::OnNMRClickStartupList(NMHDR* pNMHDR, LRESULT* pResult)
+{
+	LPNMITEMACTIVATE itemActivate = reinterpret_cast<LPNMITEMACTIVATE>(pNMHDR);
+	int index = itemActivate != nullptr ? itemActivate->iItem : -1;
+	if (index < 0)
+	{
+		CPoint clientPoint;
+		GetCursorPos(&clientPoint);
+		m_startupList.ScreenToClient(&clientPoint);
+		LVHITTESTINFO hitTest = {};
+		hitTest.pt = clientPoint;
+		index = m_startupList.SubItemHitTest(&hitTest);
+	}
+
+	if (index >= 0 && index < static_cast<int>(m_startupItems.size()))
+	{
+		m_startupList.SetItemState(-1, 0, LVIS_SELECTED);
+		m_startupList.SetItemState(index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+		m_startupList.EnsureVisible(index, FALSE);
+	}
+
+	const int selectedIndex = GetSelectedStartupIndex();
+	const bool hasSelection = selectedIndex >= 0 && selectedIndex < static_cast<int>(m_startupItems.size());
+	const bool enabled = hasSelection && m_startupItems[static_cast<size_t>(selectedIndex)].enabled;
+
+	CMenu menu;
+	menu.CreatePopupMenu();
+	menu.AppendMenu(MF_STRING | (hasSelection && !enabled ? MF_ENABLED : MF_GRAYED), ID_STARTUP_MENU_ENABLE, _T("启用"));
+	menu.AppendMenu(MF_STRING | (hasSelection && enabled ? MF_ENABLED : MF_GRAYED), ID_STARTUP_MENU_DISABLE, _T("禁用"));
+	menu.AppendMenu(MF_STRING | (hasSelection ? MF_ENABLED : MF_GRAYED), ID_STARTUP_MENU_DELETE, _T("删除"));
+	menu.AppendMenu(MF_SEPARATOR);
+	menu.AppendMenu(MF_STRING, ID_STARTUP_MENU_REFRESH, _T("刷新"));
+
+	CPoint screenPoint;
+	GetCursorPos(&screenPoint);
+	const UINT command = menu.TrackPopupMenu(TPM_RETURNCMD | TPM_LEFTALIGN | TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, this);
+	switch (command)
+	{
+	case ID_STARTUP_MENU_ENABLE:
+		SetSelectedStartupItemEnabled(true);
+		break;
+	case ID_STARTUP_MENU_DISABLE:
+		SetSelectedStartupItemEnabled(false);
+		break;
+	case ID_STARTUP_MENU_DELETE:
+		DeleteSelectedStartupItem();
+		break;
+	case ID_STARTUP_MENU_REFRESH:
+		LoadStartupItems();
+		SetStartupStatusText(_T("已刷新启动项列表。"));
+		break;
+	default:
+		break;
+	}
+
+	*pResult = 0;
+}
+
+void CMFCApplication1Dlg::OnNMCustomdrawStartupList(NMHDR* pNMHDR, LRESULT* pResult)
+{
+	LPNMLVCUSTOMDRAW customDraw = reinterpret_cast<LPNMLVCUSTOMDRAW>(pNMHDR);
+	switch (customDraw->nmcd.dwDrawStage)
+	{
+	case CDDS_PREPAINT:
+		*pResult = CDRF_NOTIFYITEMDRAW;
+		return;
+	case CDDS_ITEMPREPAINT:
+		*pResult = CDRF_NOTIFYSUBITEMDRAW;
+		return;
+	case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
+	{
+		const int row = static_cast<int>(customDraw->nmcd.dwItemSpec);
+		if (customDraw->iSubItem == 1 &&
+			row >= 0 &&
+			row < static_cast<int>(m_startupItems.size()))
+		{
+			const bool enabled = m_startupItems[static_cast<size_t>(row)].enabled;
+			customDraw->clrText = enabled ? RGB(22, 128, 62) : RGB(185, 28, 28);
+		}
+		*pResult = CDRF_DODEFAULT;
+		return;
+	}
+	default:
+		break;
+	}
+	*pResult = CDRF_DODEFAULT;
 }
 
 void CMFCApplication1Dlg::OnBnClickedStartupEnable()

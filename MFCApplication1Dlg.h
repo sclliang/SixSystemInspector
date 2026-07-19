@@ -85,6 +85,10 @@ protected:
 	afx_msg void OnTcnSelchangeSsdTab(NMHDR* pNMHDR, LRESULT* pResult);
 	// 处理启动项列表选择变化。
 	afx_msg void OnLvnItemchangedStartupList(NMHDR* pNMHDR, LRESULT* pResult);
+	// 处理启动项列表右键菜单。
+	afx_msg void OnNMRClickStartupList(NMHDR* pNMHDR, LRESULT* pResult);
+	// 处理启动项列表自绘，用颜色区分启用/禁用状态。
+	afx_msg void OnNMCustomdrawStartupList(NMHDR* pNMHDR, LRESULT* pResult);
 	DECLARE_MESSAGE_MAP()
 public:
 	// 初始化页面基础布局参数。
@@ -222,8 +226,11 @@ private:
 	{
 		HkcuRun,
 		HklmRun,
+		HkcuRun32,
+		HklmRun32,
 		HkcuRunDisabled,
 		HklmRunDisabled,
+		ApprovedOnly,
 		UserStartupFolder,
 		CommonStartupFolder,
 		UserStartupFolderDisabled,
@@ -237,7 +244,10 @@ private:
 		CString sourceLabel;
 		CString location;
 		CString disabledLocation;
+		CString approvedSubKey;
+		HKEY approvedRoot = nullptr;
 		StartupSource source = StartupSource::HkcuRun;
+		bool approvedOnly = false;
 		bool enabled = true;
 	};
 
@@ -260,6 +270,7 @@ private:
 	CFont m_valueFont;
 	CFont m_menuFont;
 	CFont m_settingsFont;
+	CFont m_startupListFont;
 	CBrush m_uiBackgroundBrush;
 	bool m_loading = true;
 	int m_scrollPos = 0;
@@ -297,6 +308,7 @@ private:
 	CStatic m_adminHintText;
 	CTabCtrl m_ssdTab;
 	CListCtrl m_startupList;
+	CImageList m_startupRowImageList;
 	CButton m_btnStartupEnable;
 	CButton m_btnStartupDisable;
 	CButton m_btnStartupDelete;
