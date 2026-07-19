@@ -17,7 +17,7 @@ Windows 系统检测与系统设置优化工具（MFC / C++）。
   - SSD 信息在进入页面后后台加载，避免阻塞界面
 
 - **屏幕详情**
-  - 基于 `res\wEdid.exe` 读取 EDID
+  - 读取当前活动显示器并解析 EDID
   - 展示显示器名称、ID、EDID 日期、版本、序列号、刷新率、校验和
   - 支持展示完整 EDID 原始十六进制数据
   - 屏幕详情后台加载，避免阻塞界面
@@ -72,7 +72,6 @@ MSBuild.exe .\MFCApplication1.vcxproj /p:Configuration=Release /p:Platform=x64
 ## 输出文件
 
 - `x64\Release\SystemInspector.exe`
-- `res\wEdid.exe`：屏幕 EDID 读取依赖
 
 ## 项目信息
 

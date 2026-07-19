@@ -93,9 +93,12 @@ namespace
 
 	bool EnsureComInitialized();
 	CString VariantToCString(VARIANT& var);
-	bool RunProcessCaptureOutput(const CString& executablePath, CString& output);
 	CString JoinUniqueValues(const std::set<CString, std::less<>>& values, const CString& separator);
 	int ExtractPhysicalDriveId(const CString& devicePath);
+	std::vector<std::vector<CString>> QueryWmiRows(
+		const CString& wmiNamespace,
+		const CString& wql,
+		const std::vector<CString>& propertyNames);
 
 	void EnableWin11Chrome(HWND hwnd)
 	{
@@ -262,63 +265,291 @@ namespace
 		return hasDigit;
 	}
 
-	CString ResolveEdidToolPath()
+	struct EdidInfo
 	{
-		TCHAR modulePath[MAX_PATH] = {};
-		GetModuleFileName(nullptr, modulePath, MAX_PATH);
-		CString executableDir(modulePath);
-		const int slash = executableDir.ReverseFind(_T('\\'));
-		if (slash >= 0)
-		{
-			executableDir = executableDir.Left(slash);
-		}
+		CString monitorId;
+		CString edidDate;
+		CString edidVersion;
+		CString serialNumber;
+		CString refreshRate;
+		CString monitorName;
+		CString checksum;
+		CString fullEdidHex;
+	};
 
-		CString edidToolPath = executableDir + _T("\\res\\wEdid.exe");
-		if (!PathFileExists(edidToolPath))
-		{
-			edidToolPath = _T("D:\\source\\repos\\MFCApplication1\\res\\wEdid.exe");
-		}
-		return edidToolPath;
-	}
-
-	CString ResolveMonitorNameFromEdidTool()
+	CString DecodeEdidManufacturerId(const BYTE* edid, size_t size)
 	{
-		const CString edidToolPath = ResolveEdidToolPath();
-		CString output;
-		if (!RunProcessCaptureOutput(edidToolPath, output))
+		if (edid == nullptr || size < 10)
 		{
 			return _T("");
 		}
 
-		CStringArray lines;
-		int start = 0;
-		while (start <= output.GetLength())
+		const WORD code = static_cast<WORD>((edid[8] << 8) | edid[9]);
+		CString id;
+		for (int shift = 10; shift >= 0; shift -= 5)
 		{
-			const int end = output.Find(_T('\n'), start);
-			CString line = end >= 0 ? output.Mid(start, end - start) : output.Mid(start);
-			line.Trim();
-			if (!line.IsEmpty())
+			const int value = (code >> shift) & 0x1F;
+			if (value <= 0 || value > 26)
 			{
-				lines.Add(line);
+				return _T("");
 			}
-			if (end < 0)
+			id.AppendChar(static_cast<TCHAR>(_T('A') + value - 1));
+		}
+		return id;
+	}
+
+	CString DecodeEdidDescriptorText(const BYTE* descriptor)
+	{
+		CString text;
+		if (descriptor == nullptr)
+		{
+			return text;
+		}
+
+		for (int i = 5; i < 18; ++i)
+		{
+			const BYTE ch = descriptor[i];
+			if (ch == 0x0A || ch == 0x00)
 			{
 				break;
 			}
-			start = end + 1;
+			text.AppendChar(static_cast<TCHAR>(ch));
+		}
+		text.Trim();
+		return text;
+	}
+
+	CString FormatEdidHex(const std::vector<BYTE>& edid)
+	{
+		CString text;
+		for (size_t i = 0; i < edid.size(); ++i)
+		{
+			CString byteText;
+			byteText.Format(_T("%02x"), edid[i]);
+			if (i > 0)
+			{
+				text += (i % 16 == 0) ? _T("\r\n") : _T(" ");
+			}
+			text += byteText;
+		}
+		return text;
+	}
+
+	bool ParseEdid(const std::vector<BYTE>& edid, EdidInfo& info)
+	{
+		if (edid.size() < 128)
+		{
+			return false;
 		}
 
-		std::set<CString, std::less<>> monitorNames;
-		for (int i = 0; i < lines.GetCount(); ++i)
+		const BYTE expectedHeader[] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+		if (memcmp(edid.data(), expectedHeader, sizeof(expectedHeader)) != 0)
 		{
-			const CString& line = lines.GetAt(i);
-			if (line.Find(_T("Monitor Name:")) == 0)
+			return false;
+		}
+
+		info.monitorId = DecodeEdidManufacturerId(edid.data(), edid.size());
+		if (HasValue(info.monitorId))
+		{
+			CString productCode;
+			productCode.Format(_T("%02X%02X"), edid[11], edid[10]);
+			info.monitorId += productCode;
+		}
+
+		const UINT serial = static_cast<UINT>(edid[12]) |
+			(static_cast<UINT>(edid[13]) << 8) |
+			(static_cast<UINT>(edid[14]) << 16) |
+			(static_cast<UINT>(edid[15]) << 24);
+		if (serial > 0)
+		{
+			info.serialNumber.Format(_T("%u"), serial);
+		}
+
+		info.edidDate.Format(_T("Week%u, Year%u"), edid[16], 1990 + edid[17]);
+		info.edidVersion.Format(_T("%u.%u"), edid[18], edid[19]);
+		info.checksum.Format(_T("0x%02X"), edid[127]);
+		info.fullEdidHex = FormatEdidHex(edid);
+
+		if (edid[54] != 0 || edid[55] != 0)
+		{
+			const UINT pixelClock10Khz = static_cast<UINT>(edid[54]) | (static_cast<UINT>(edid[55]) << 8);
+			const UINT hActive = static_cast<UINT>(edid[56]) | ((static_cast<UINT>(edid[58]) & 0xF0) << 4);
+			const UINT hBlank = static_cast<UINT>(edid[57]) | ((static_cast<UINT>(edid[58]) & 0x0F) << 8);
+			const UINT vActive = static_cast<UINT>(edid[59]) | ((static_cast<UINT>(edid[61]) & 0xF0) << 4);
+			const UINT vBlank = static_cast<UINT>(edid[60]) | ((static_cast<UINT>(edid[61]) & 0x0F) << 8);
+			const UINT hTotal = hActive + hBlank;
+			const UINT vTotal = vActive + vBlank;
+			if (pixelClock10Khz > 0 && hTotal > 0 && vTotal > 0)
 			{
-				const CString monitorName = Trimmed(line.Mid(13));
+				const double refreshRate = static_cast<double>(pixelClock10Khz) * 10000.0 / (static_cast<double>(hTotal) * static_cast<double>(vTotal));
+				info.refreshRate.Format(_T("%.2f"), refreshRate);
+			}
+		}
+
+		for (int offset = 54; offset <= 108; offset += 18)
+		{
+			if (edid[offset] != 0x00 || edid[offset + 1] != 0x00 || edid[offset + 2] != 0x00)
+			{
+				continue;
+			}
+
+			const BYTE descriptorType = edid[offset + 3];
+			if (descriptorType == 0xFC)
+			{
+				const CString monitorName = DecodeEdidDescriptorText(&edid[offset]);
 				if (HasValue(monitorName) && !IsLikelyMonitorIdToken(monitorName))
 				{
-					monitorNames.insert(monitorName);
+					info.monitorName = monitorName;
 				}
+			}
+			else if (descriptorType == 0xFF && !HasValue(info.serialNumber))
+			{
+				const CString serialText = DecodeEdidDescriptorText(&edid[offset]);
+				if (HasValue(serialText))
+				{
+					info.serialNumber = serialText;
+				}
+			}
+		}
+
+		return true;
+	}
+
+	CString NormalizeDisplayRegistryInstancePath(const CString& instanceName)
+	{
+		CString path = Trimmed(instanceName);
+		path.Replace(_T("\\\\"), _T("\\"));
+		const int suffix = path.ReverseFind(_T('_'));
+		if (suffix > 0)
+		{
+			path = path.Left(suffix);
+		}
+		return path;
+	}
+
+	bool ReadEdidFromRegistryInstancePath(const CString& instancePath, std::vector<BYTE>& edid)
+	{
+		edid.clear();
+		CString paramsPath = _T("SYSTEM\\CurrentControlSet\\Enum\\");
+		paramsPath += NormalizeDisplayRegistryInstancePath(instancePath);
+		paramsPath += _T("\\Device Parameters");
+
+		CRegKey paramsKey;
+		if (paramsKey.Open(HKEY_LOCAL_MACHINE, paramsPath, KEY_READ) != ERROR_SUCCESS)
+		{
+			return false;
+		}
+
+		DWORD type = 0;
+		DWORD byteCount = 0;
+		if (RegQueryValueEx(paramsKey, _T("EDID"), nullptr, &type, nullptr, &byteCount) != ERROR_SUCCESS ||
+			type != REG_BINARY ||
+			byteCount < 128)
+		{
+			return false;
+		}
+
+		edid.assign(byteCount, 0);
+		if (RegQueryValueEx(paramsKey, _T("EDID"), nullptr, &type, edid.data(), &byteCount) != ERROR_SUCCESS)
+		{
+			edid.clear();
+			return false;
+		}
+		edid.resize(byteCount);
+		return true;
+	}
+
+	std::vector<CString> GetActiveMonitorInstancePathsFromWmi()
+	{
+		std::vector<CString> instancePaths;
+		const auto rows = QueryWmiRows(
+			_T("ROOT\\WMI"),
+			_T("SELECT InstanceName, Active FROM WmiMonitorID"),
+			{ _T("InstanceName"), _T("Active") });
+
+		for (const auto& row : rows)
+		{
+			if (row.size() < 2 || row[1].CompareNoCase(_T("True")) != 0)
+			{
+				continue;
+			}
+			const CString instancePath = NormalizeDisplayRegistryInstancePath(row[0]);
+			if (HasValue(instancePath))
+			{
+				instancePaths.push_back(instancePath);
+			}
+		}
+		return instancePaths;
+	}
+
+	std::vector<CString> GetActiveMonitorInstancePathsFromDisplayDevices()
+	{
+		std::vector<CString> instancePaths;
+		for (DWORD adapterIndex = 0;; ++adapterIndex)
+		{
+			DISPLAY_DEVICE adapter = {};
+			adapter.cb = sizeof(adapter);
+			if (!EnumDisplayDevices(nullptr, adapterIndex, &adapter, 0))
+			{
+				break;
+			}
+
+			for (DWORD monitorIndex = 0;; ++monitorIndex)
+			{
+				DISPLAY_DEVICE monitor = {};
+				monitor.cb = sizeof(monitor);
+				if (!EnumDisplayDevices(adapter.DeviceName, monitorIndex, &monitor, 0))
+				{
+					break;
+				}
+				if ((monitor.StateFlags & DISPLAY_DEVICE_ACTIVE) == 0)
+				{
+					continue;
+				}
+
+				const CString deviceId = NormalizeDisplayRegistryInstancePath(monitor.DeviceID);
+				if (deviceId.Find(_T("DISPLAY\\")) == 0)
+				{
+					instancePaths.push_back(deviceId);
+				}
+			}
+		}
+		return instancePaths;
+	}
+
+	std::vector<std::vector<BYTE>> ReadActiveEdidBlocksFromRegistry()
+	{
+		std::vector<std::vector<BYTE>> edids;
+		std::vector<CString> instancePaths = GetActiveMonitorInstancePathsFromWmi();
+		const std::vector<CString> displayDevicePaths = GetActiveMonitorInstancePathsFromDisplayDevices();
+		instancePaths.insert(instancePaths.end(), displayDevicePaths.begin(), displayDevicePaths.end());
+
+		std::set<CString, std::less<>> seen;
+		for (const CString& instancePath : instancePaths)
+		{
+			if (!seen.insert(instancePath).second)
+			{
+				continue;
+			}
+
+			std::vector<BYTE> edid;
+			if (ReadEdidFromRegistryInstancePath(instancePath, edid))
+			{
+				edids.push_back(edid);
+			}
+		}
+		return edids;
+	}
+
+	CString ResolveMonitorNameFromEdid()
+	{
+		std::set<CString, std::less<>> monitorNames;
+		for (const auto& edid : ReadActiveEdidBlocksFromRegistry())
+		{
+			EdidInfo info;
+			if (ParseEdid(edid, info) && HasValue(info.monitorName))
+			{
+				monitorNames.insert(info.monitorName);
 			}
 		}
 		return JoinUniqueValues(monitorNames, _T("\r\n"));
@@ -754,78 +985,6 @@ namespace
 		{
 			maxTransferMode = _T("PCIe/NVMe");
 		}
-	}
-
-	bool RunProcessCaptureOutput(const CString& executablePath, CString& output)
-	{
-		output.Empty();
-
-		SECURITY_ATTRIBUTES sa = {};
-		sa.nLength = sizeof(sa);
-		sa.bInheritHandle = TRUE;
-		sa.lpSecurityDescriptor = nullptr;
-
-		HANDLE readPipe = nullptr;
-		HANDLE writePipe = nullptr;
-		if (!CreatePipe(&readPipe, &writePipe, &sa, 0))
-		{
-			return false;
-		}
-		if (!SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0))
-		{
-			CloseHandle(writePipe);
-			CloseHandle(readPipe);
-			return false;
-		}
-
-		STARTUPINFO si = {};
-		si.cb = sizeof(si);
-		si.dwFlags = STARTF_USESTDHANDLES;
-		si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-		si.hStdOutput = writePipe;
-		si.hStdError = writePipe;
-
-		PROCESS_INFORMATION pi = {};
-		CString cmdLine;
-		cmdLine.Format(_T("\"%s\""), static_cast<LPCTSTR>(executablePath));
-		LPTSTR mutableCmdLine = cmdLine.GetBuffer();
-		const BOOL created = CreateProcess(
-			nullptr,
-			mutableCmdLine,
-			nullptr,
-			nullptr,
-			TRUE,
-			CREATE_NO_WINDOW,
-			nullptr,
-			nullptr,
-			&si,
-			&pi);
-		cmdLine.ReleaseBuffer();
-		CloseHandle(writePipe);
-
-		if (!created)
-		{
-			CloseHandle(readPipe);
-			return false;
-		}
-
-		WaitForSingleObject(pi.hProcess, 10000);
-
-		CStringA rawText;
-		char buffer[4096] = {};
-		DWORD bytesRead = 0;
-		while (ReadFile(readPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr) && bytesRead > 0)
-		{
-			buffer[bytesRead] = '\0';
-			rawText += buffer;
-		}
-
-		CloseHandle(readPipe);
-		CloseHandle(pi.hThread);
-		CloseHandle(pi.hProcess);
-
-		output = CA2T(rawText);
-		return !output.IsEmpty();
 	}
 
 	bool WriteUtf8TextFile(const CString& filePath, const CString& text, CString& errorMessage)
@@ -1815,8 +1974,8 @@ namespace
 	// 解析显示器型号，按数据源可靠性进行多级回退。
 	CString ResolveMonitorModel()
 	{
-		// 按需求优先使用 wEdid 解析出的 Monitor Name；拿不到再降级到 WMI。
-		const CString edidMonitorName = ResolveMonitorNameFromEdidTool();
+		// 优先使用注册表 EDID 解析出的 Monitor Name；拿不到再降级到 WMI。
+		const CString edidMonitorName = ResolveMonitorNameFromEdid();
 		if (HasValue(edidMonitorName))
 		{
 			return edidMonitorName;
@@ -2882,25 +3041,21 @@ void CMFCApplication1Dlg::LoadScreenInformation()
 	m_screenRows.clear();
 	m_screenLoaded = false;
 
-	TCHAR modulePath[MAX_PATH] = {};
-	GetModuleFileName(nullptr, modulePath, MAX_PATH);
-	CString executableDir(modulePath);
-	const int slash = executableDir.ReverseFind(_T('\\'));
-	if (slash >= 0)
+	EdidInfo edidInfo;
+	bool parsed = false;
+	for (const auto& edid : ReadActiveEdidBlocksFromRegistry())
 	{
-		executableDir = executableDir.Left(slash);
-	}
-	CString edidToolPath = executableDir + _T("\\res\\wEdid.exe");
-	if (!PathFileExists(edidToolPath))
-	{
-		edidToolPath = _T("D:\\source\\repos\\MFCApplication1\\res\\wEdid.exe");
+		if (ParseEdid(edid, edidInfo))
+		{
+			parsed = true;
+			break;
+		}
 	}
 
-	CString output;
-	if (!RunProcessCaptureOutput(edidToolPath, output))
+	if (!parsed)
 	{
-		m_screenRows.push_back({ _T("状态"), _T("未能执行 wEdid.exe") });
-		m_screenRows.push_back({ _T("路径"), edidToolPath });
+		m_screenRows.push_back({ _T("状态"), _T("未读取到当前活动显示器的有效 EDID") });
+		m_screenRows.push_back({ _T("读取方式"), _T("WmiMonitorID Active=True / EnumDisplayDevices ACTIVE") });
 		m_screenLoaded = true;
 		m_screenLoading = false;
 		if (hasWindow)
@@ -2910,111 +3065,17 @@ void CMFCApplication1Dlg::LoadScreenInformation()
 		return;
 	}
 
-	CStringArray lines;
-	int start = 0;
-	while (start <= output.GetLength())
-	{
-		int end = output.Find(_T('\n'), start);
-		CString line = end >= 0 ? output.Mid(start, end - start) : output.Mid(start);
-		line.Trim();
-		if (!line.IsEmpty())
-		{
-			lines.Add(line);
-		}
-		if (end < 0)
-		{
-			break;
-		}
-		start = end + 1;
-	}
-
-	CString monitorId;
-	CString edidDate;
-	CString edidVersion;
-	CString serialNumber;
-	CString refreshRate;
-	CString monitorName;
-	CString checksum;
-	CString fullEdidHex;
-	bool inHexSection = false;
-
-	for (int i = 0; i < lines.GetCount(); ++i)
-	{
-		const CString& line = lines.GetAt(i);
-		if (line.Find(_T("Found value EDID")) == 0)
-		{
-			inHexSection = true;
-			continue;
-		}
-		if (line.Find(_T("====== EDID Decode======")) == 0)
-		{
-			inHexSection = false;
-			continue;
-		}
-
-		if (inHexSection)
-		{
-			bool looksLikeHexLine = true;
-			for (int c = 0; c < line.GetLength(); ++c)
-			{
-				const wchar_t ch = line[c];
-				const bool isHexChar = (ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'f') || (ch >= L'A' && ch <= L'F');
-				if (!(isHexChar || ch == L' '))
-				{
-					looksLikeHexLine = false;
-					break;
-				}
-			}
-			if (looksLikeHexLine && !line.IsEmpty())
-			{
-				if (!fullEdidHex.IsEmpty())
-				{
-					fullEdidHex += _T("\r\n");
-				}
-				fullEdidHex += line;
-			}
-		}
-		if (line.Find(_T("Monitor ID:")) == 0)
-		{
-			monitorId = Trimmed(line.Mid(11));
-		}
-		else if (line.Find(_T("EDID Date:")) == 0)
-		{
-			edidDate = Trimmed(line.Mid(10));
-		}
-		else if (line.Find(_T("EDID Version:")) == 0)
-		{
-			edidVersion = Trimmed(line.Mid(13));
-		}
-		else if (line.Find(_T("Serial Number:")) == 0)
-		{
-			serialNumber = Trimmed(line.Mid(14));
-		}
-		else if (line.Find(_T("Refresh Rate:")) == 0)
-		{
-			refreshRate = Trimmed(line.Mid(13));
-		}
-		else if (line.Find(_T("Monitor Name:")) == 0)
-		{
-			monitorName = Trimmed(line.Mid(13));
-		}
-		else if (line.Find(_T("EDID Checksum:")) == 0)
-		{
-			checksum = Trimmed(line.Mid(14));
-		}
-	}
-
 	m_screenRows.push_back({ _T("状态"), _T("已读取 EDID") });
-	m_screenRows.push_back({ _T("显示器名称"), HasValue(monitorName) ? monitorName : _T("N/A") });
-	m_screenRows.push_back({ _T("显示器ID"), HasValue(monitorId) ? monitorId : _T("N/A") });
-	m_screenRows.push_back({ _T("EDID日期"), HasValue(edidDate) ? edidDate : _T("N/A") });
-	m_screenRows.push_back({ _T("EDID版本"), HasValue(edidVersion) ? edidVersion : _T("N/A") });
-	m_screenRows.push_back({ _T("序列号"), HasValue(serialNumber) ? serialNumber : _T("N/A") });
-	m_screenRows.push_back({ _T("刷新率"), HasValue(refreshRate) ? refreshRate : _T("N/A") });
-	m_screenRows.push_back({ _T("校验和"), HasValue(checksum) ? checksum : _T("N/A") });
-	if (HasValue(fullEdidHex))
+	m_screenRows.push_back({ _T("显示器名称"), HasValue(edidInfo.monitorName) ? edidInfo.monitorName : _T("N/A") });
+	m_screenRows.push_back({ _T("显示器ID"), HasValue(edidInfo.monitorId) ? edidInfo.monitorId : _T("N/A") });
+	m_screenRows.push_back({ _T("EDID日期"), HasValue(edidInfo.edidDate) ? edidInfo.edidDate : _T("N/A") });
+	m_screenRows.push_back({ _T("EDID版本"), HasValue(edidInfo.edidVersion) ? edidInfo.edidVersion : _T("N/A") });
+	m_screenRows.push_back({ _T("序列号"), HasValue(edidInfo.serialNumber) ? edidInfo.serialNumber : _T("N/A") });
+	m_screenRows.push_back({ _T("刷新率"), HasValue(edidInfo.refreshRate) ? edidInfo.refreshRate : _T("N/A") });
+	m_screenRows.push_back({ _T("校验和"), HasValue(edidInfo.checksum) ? edidInfo.checksum : _T("N/A") });
+	if (HasValue(edidInfo.fullEdidHex))
 	{
-		m_screenRows.push_back({ _T("EDID原始数据(完整)"), fullEdidHex });
+		m_screenRows.push_back({ _T("EDID原始数据(完整)"), edidInfo.fullEdidHex });
 	}
 
 	m_screenLoaded = true;
@@ -3906,7 +3967,7 @@ void CMFCApplication1Dlg::DrawScreenInformation(CDC& dc, const CRect& clientRect
 	dc.SelectObject(&m_subtitleFont);
 	dc.SetTextColor(UiSecondaryText);
 	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 16, headerRect.bottom - 8);
-	dc.DrawText(_T("基于 wEDID 接口读取 EDID 并解析显示器关键信息"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+	dc.DrawText(_T("读取当前活动显示器的 EDID 并解析关键信息"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 
 	const int labelX = listRect.left + 16;
 	const int labelWidth = 178;
