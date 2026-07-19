@@ -19,6 +19,7 @@
 #include <Shlwapi.h>
 #include <dwmapi.h>
 #include <uxtheme.h>
+#include <ShlObj.h>
 #include <cwctype>
 #include <cmath>
 #include <map>
@@ -29,6 +30,7 @@
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "Dwmapi.lib")
 #pragma comment(lib, "UxTheme.lib")
+#pragma comment(lib, "Shell32.lib")
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
@@ -64,6 +66,7 @@ namespace
 	constexpr int PAGE_SSD_INFO = 2;
 	constexpr int PAGE_SCREEN_INFO = 3;
 	constexpr int PAGE_SYSTEM_STATUS = 4;
+	constexpr int PAGE_STARTUP_ITEMS = 5;
 	constexpr UINT IDC_CHK_UAC = 3001;
 	constexpr UINT IDC_CHK_FIREWALL = 3002;
 	constexpr UINT IDC_CHK_SEC_CENTER = 3003;
@@ -78,6 +81,18 @@ namespace
 	constexpr UINT IDC_STATUS_TEXT = 3013;
 	constexpr UINT IDC_ADMIN_HINT_TEXT = 3014;
 	constexpr UINT IDC_SSD_TAB = 3015;
+	constexpr UINT IDC_STARTUP_LIST = 3020;
+	constexpr UINT IDC_STARTUP_ENABLE = 3021;
+	constexpr UINT IDC_STARTUP_DISABLE = 3022;
+	constexpr UINT IDC_STARTUP_REFRESH = 3023;
+	constexpr UINT IDC_STARTUP_NAME = 3024;
+	constexpr UINT IDC_STARTUP_PATH = 3025;
+	constexpr UINT IDC_STARTUP_BROWSE = 3026;
+	constexpr UINT IDC_STARTUP_ADD = 3027;
+	constexpr UINT IDC_STARTUP_STATUS = 3028;
+	constexpr UINT IDC_STARTUP_DELETE = 3029;
+	constexpr UINT IDC_STARTUP_NAME_LABEL = 3030;
+	constexpr UINT IDC_STARTUP_PATH_LABEL = 3031;
 	constexpr UINT IDC_OPTIONS_START = IDC_CHK_UAC;
 	constexpr UINT IDC_OPTIONS_END = IDC_CHK_WINDOWS_UPDATE;
 	const COLORREF UiBackground = RGB(243, 243, 243);
@@ -2726,6 +2741,89 @@ namespace
 		}
 		return text;
 	}
+
+	CString StartupRunSubKey(bool disabled)
+	{
+		return disabled
+			? _T("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunDisabled")
+			: _T("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
+	}
+
+	CString KnownFolderPath(REFKNOWNFOLDERID folderId)
+	{
+		PWSTR path = nullptr;
+		if (FAILED(SHGetKnownFolderPath(folderId, 0, nullptr, &path)) || path == nullptr)
+		{
+			return _T("");
+		}
+
+		CString result(path);
+		CoTaskMemFree(path);
+		return result;
+	}
+
+	CString CombinePath(const CString& folder, const CString& name)
+	{
+		CString result = folder;
+		if (!result.IsEmpty() && result.Right(1) != _T("\\"))
+		{
+			result += _T("\\");
+		}
+		result += name;
+		return result;
+	}
+
+	CString EnsureUniqueFilePath(const CString& folder, const CString& fileName)
+	{
+		CString candidate = CombinePath(folder, fileName);
+		if (!PathFileExists(candidate))
+		{
+			return candidate;
+		}
+
+		const int dot = fileName.ReverseFind(_T('.'));
+		const CString base = dot > 0 ? fileName.Left(dot) : fileName;
+		const CString ext = dot > 0 ? fileName.Mid(dot) : _T("");
+		for (int i = 1; i < 1000; ++i)
+		{
+			CString numbered;
+			numbered.Format(_T("%s (%d)%s"), base.GetString(), i, ext.GetString());
+			candidate = CombinePath(folder, numbered);
+			if (!PathFileExists(candidate))
+			{
+				return candidate;
+			}
+		}
+		return candidate;
+	}
+
+	CString FileNameFromPath(const CString& path)
+	{
+		return PathFindFileName(path);
+	}
+
+	CString ParentDirectory(const CString& path)
+	{
+		TCHAR buffer[MAX_PATH] = {};
+		_tcsncpy_s(buffer, path, _TRUNCATE);
+		return PathRemoveFileSpec(buffer) ? CString(buffer) : _T("");
+	}
+
+	CString QuoteCommandPath(const CString& path)
+	{
+		CString trimmed = Trimmed(path);
+		if (trimmed.IsEmpty())
+		{
+			return _T("");
+		}
+		if (trimmed.Left(1) == _T("\""))
+		{
+			return trimmed;
+		}
+		CString quoted;
+		quoted.Format(_T("\"%s\""), trimmed.GetString());
+		return quoted;
+	}
 }
 
 // 用于应用程序“关于”菜单项的 CAboutDlg 对话框
@@ -2791,8 +2889,15 @@ BEGIN_MESSAGE_MAP(CMFCApplication1Dlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BTN_APPLY_SETTINGS, &CMFCApplication1Dlg::OnBnClickedApplySettings)
 	ON_BN_CLICKED(IDC_BTN_REBOOT, &CMFCApplication1Dlg::OnBnClickedRebootSystem)
 	ON_BN_CLICKED(IDC_BTN_TOGGLE_SELECT, &CMFCApplication1Dlg::OnBnClickedToggleSelect)
+	ON_BN_CLICKED(IDC_STARTUP_ENABLE, &CMFCApplication1Dlg::OnBnClickedStartupEnable)
+	ON_BN_CLICKED(IDC_STARTUP_DISABLE, &CMFCApplication1Dlg::OnBnClickedStartupDisable)
+	ON_BN_CLICKED(IDC_STARTUP_DELETE, &CMFCApplication1Dlg::OnBnClickedStartupDelete)
+	ON_BN_CLICKED(IDC_STARTUP_REFRESH, &CMFCApplication1Dlg::OnBnClickedStartupRefresh)
+	ON_BN_CLICKED(IDC_STARTUP_BROWSE, &CMFCApplication1Dlg::OnBnClickedStartupBrowse)
+	ON_BN_CLICKED(IDC_STARTUP_ADD, &CMFCApplication1Dlg::OnBnClickedStartupAdd)
 	ON_COMMAND_RANGE(IDC_OPTIONS_START, IDC_OPTIONS_END, &CMFCApplication1Dlg::OnSettingsOptionChanged)
 	ON_NOTIFY(TCN_SELCHANGE, IDC_SSD_TAB, &CMFCApplication1Dlg::OnTcnSelchangeSsdTab)
+	ON_NOTIFY(LVN_ITEMCHANGED, IDC_STARTUP_LIST, &CMFCApplication1Dlg::OnLvnItemchangedStartupList)
 END_MESSAGE_MAP()
 
 // 初始化主对话框：菜单、图标、布局与异步加载入口。
@@ -2823,6 +2928,7 @@ BOOL CMFCApplication1Dlg::OnInitDialog()
 	BuildMainLayout();
 	CreateSettingsControls();
 	CreateSsdControls();
+	CreateStartupControls();
 	UpdatePageVisibility();
 	// 先显示界面，再通过自定义消息异步加载数据，提升启动响应速度。
 	m_loading = true;
@@ -2913,6 +3019,15 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 		if (m_activePage != PAGE_SYSTEM_STATUS)
 		{
 			m_activePage = PAGE_SYSTEM_STATUS;
+			UpdatePageVisibility();
+			Invalidate();
+		}
+	}
+	else if (m_startupMenuRect.PtInRect(point))
+	{
+		if (m_activePage != PAGE_STARTUP_ITEMS)
+		{
+			m_activePage = PAGE_STARTUP_ITEMS;
 			UpdatePageVisibility();
 			Invalidate();
 		}
@@ -3099,6 +3214,7 @@ void CMFCApplication1Dlg::AdjustLayout(int cx, int cy)
 	RecalcLayoutRects(clientRect);
 	UpdateSettingsControlLayout();
 	UpdateSsdControlLayout();
+	UpdateStartupControlLayout();
 }
 
 // 向系统信息数据源追加一条展示记录。
@@ -4070,12 +4186,14 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 
 	DrawRoundedCard(memDc, m_infoMenuRect, m_activePage == PAGE_SYSTEM_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_statusMenuRect, m_activePage == PAGE_SYSTEM_STATUS ? selectedColor : unselectedColor, 10);
+	DrawRoundedCard(memDc, m_startupMenuRect, m_activePage == PAGE_STARTUP_ITEMS ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_settingsMenuRect, m_activePage == PAGE_SYSTEM_SETTINGS ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_ssdMenuRect, m_activePage == PAGE_SSD_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_screenMenuRect, m_activePage == PAGE_SCREEN_INFO ? selectedColor : unselectedColor, 10);
 
 	if (m_activePage == PAGE_SYSTEM_INFO) DrawAccentStrip(memDc, m_infoMenuRect, UiAccent);
 	if (m_activePage == PAGE_SYSTEM_STATUS) DrawAccentStrip(memDc, m_statusMenuRect, UiAccent);
+	if (m_activePage == PAGE_STARTUP_ITEMS) DrawAccentStrip(memDc, m_startupMenuRect, UiAccent);
 	if (m_activePage == PAGE_SYSTEM_SETTINGS) DrawAccentStrip(memDc, m_settingsMenuRect, UiAccent);
 	if (m_activePage == PAGE_SSD_INFO) DrawAccentStrip(memDc, m_ssdMenuRect, UiAccent);
 	if (m_activePage == PAGE_SCREEN_INFO) DrawAccentStrip(memDc, m_screenMenuRect, UiAccent);
@@ -4096,6 +4214,11 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	menuTextRect.right -= 12;
 	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_STATUS ? UiText : UiSecondaryText);
 	memDc.DrawText(_T("系统状态"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_startupMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_STARTUP_ITEMS ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("启动项"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 	menuTextRect = m_settingsMenuRect;
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
@@ -4119,6 +4242,10 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	else if (m_activePage == PAGE_SYSTEM_STATUS)
 	{
 		DrawSystemStatus(memDc, clientRect);
+	}
+	else if (m_activePage == PAGE_STARTUP_ITEMS)
+	{
+		DrawStartupItems(memDc, clientRect);
 	}
 	else if (m_activePage == PAGE_SSD_INFO)
 	{
@@ -4507,6 +4634,31 @@ void CMFCApplication1Dlg::DrawSystemStatus(CDC& dc, const CRect& clientRect)
 	dc.RestoreDC(oldDc);
 }
 
+void CMFCApplication1Dlg::DrawStartupItems(CDC& dc, const CRect& clientRect)
+{
+	UNREFERENCED_PARAMETER(clientRect);
+
+	const int actionHeight = 248;
+	const CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
+	const CRect listCardRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - actionHeight - 16);
+	const CRect actionCardRect(m_contentRect.left + 8, listCardRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
+	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
+	DrawRoundedCard(dc, listCardRect, UiSurface, 12, UiBorder);
+	DrawRoundedCard(dc, actionCardRect, UiSurfaceAlt, 10, UiBorder);
+
+	dc.SelectObject(&m_titleFont);
+	dc.SetTextColor(UiText);
+	CRect titleRect(headerRect.left + 18, headerRect.top + 10, headerRect.right - 16, headerRect.top + 42);
+	dc.DrawText(_T("启动项"), titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+	dc.SelectObject(&m_subtitleFont);
+	dc.SetTextColor(UiSecondaryText);
+	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 16, headerRect.bottom - 8);
+	dc.DrawText(_T("查看开机自动启动项目，并启用、禁用或添加当前用户启动项"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+	UpdateVerticalScrollBar(max(1, m_contentRect.Height()), max(1, m_contentRect.Height()));
+}
+
 // 绘制系统设置页背景卡片与分组标题。
 void CMFCApplication1Dlg::DrawSystemSettings(CDC& dc, const CRect& clientRect)
 {
@@ -4638,7 +4790,8 @@ void CMFCApplication1Dlg::RecalcLayoutRects(const CRect& clientRect)
 	m_contentRect = CRect(m_sideRect.right + 12, margin, clientRect.right - margin, clientRect.bottom - margin);
 	m_infoMenuRect = CRect(m_sideRect.left + 10, m_sideRect.top + 54, m_sideRect.right - 10, m_sideRect.top + 102);
 	m_statusMenuRect = CRect(m_sideRect.left + 10, m_infoMenuRect.bottom + 10, m_sideRect.right - 10, m_infoMenuRect.bottom + 62);
-	m_ssdMenuRect = CRect(m_sideRect.left + 10, m_statusMenuRect.bottom + 10, m_sideRect.right - 10, m_statusMenuRect.bottom + 62);
+	m_startupMenuRect = CRect(m_sideRect.left + 10, m_statusMenuRect.bottom + 10, m_sideRect.right - 10, m_statusMenuRect.bottom + 62);
+	m_ssdMenuRect = CRect(m_sideRect.left + 10, m_startupMenuRect.bottom + 10, m_sideRect.right - 10, m_startupMenuRect.bottom + 62);
 	m_screenMenuRect = CRect(m_sideRect.left + 10, m_ssdMenuRect.bottom + 10, m_sideRect.right - 10, m_ssdMenuRect.bottom + 62);
 	m_settingsMenuRect = CRect(m_sideRect.left + 10, m_screenMenuRect.bottom + 10, m_sideRect.right - 10, m_screenMenuRect.bottom + 62);
 }
@@ -4698,6 +4851,46 @@ void CMFCApplication1Dlg::CreateSsdControls()
 	UpdateSsdControlLayout();
 }
 
+void CMFCApplication1Dlg::CreateStartupControls()
+{
+	m_startupList.Create(WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+		CRect(0, 0, 10, 10), this, IDC_STARTUP_LIST);
+	m_startupList.SetExtendedStyle(LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_LABELTIP | LVS_EX_DOUBLEBUFFER);
+	m_startupList.SetFont(&m_settingsFont);
+	m_startupList.InsertColumn(0, _T("名称"), LVCFMT_LEFT, 180);
+	m_startupList.InsertColumn(1, _T("状态"), LVCFMT_LEFT, 104);
+	m_startupList.InsertColumn(2, _T("来源"), LVCFMT_LEFT, 210);
+	m_startupList.InsertColumn(3, _T("命令/路径"), LVCFMT_LEFT, 520);
+	SetWindowTheme(m_startupList.GetSafeHwnd(), L"Explorer", nullptr);
+
+	m_btnStartupEnable.Create(_T("启用"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_STARTUP_ENABLE);
+	m_btnStartupDisable.Create(_T("禁用"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_STARTUP_DISABLE);
+	m_btnStartupDelete.Create(_T("删除"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_STARTUP_DELETE);
+	m_btnStartupRefresh.Create(_T("刷新"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_STARTUP_REFRESH);
+	m_labelStartupName.Create(_T("名称"), WS_CHILD | SS_LEFT | SS_CENTERIMAGE, CRect(0, 0, 10, 10), this, IDC_STARTUP_NAME_LABEL);
+	m_labelStartupPath.Create(_T("程序路径或命令"), WS_CHILD | SS_LEFT | SS_CENTERIMAGE, CRect(0, 0, 10, 10), this, IDC_STARTUP_PATH_LABEL);
+	m_editStartupName.Create(WS_CHILD | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, CRect(0, 0, 10, 10), this, IDC_STARTUP_NAME);
+	m_editStartupPath.Create(WS_CHILD | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, CRect(0, 0, 10, 10), this, IDC_STARTUP_PATH);
+	m_btnStartupBrowse.Create(_T("浏览"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_STARTUP_BROWSE);
+	m_btnStartupAdd.Create(_T("添加启动项"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_STARTUP_ADD);
+	m_startupStatusText.Create(_T("就绪"), WS_CHILD | SS_LEFT | SS_CENTERIMAGE, CRect(0, 0, 10, 10), this, IDC_STARTUP_STATUS);
+
+	CWnd* controls[] = {
+		&m_btnStartupEnable, &m_btnStartupDisable, &m_btnStartupDelete, &m_btnStartupRefresh,
+		&m_labelStartupName, &m_labelStartupPath, &m_editStartupName, &m_editStartupPath, &m_btnStartupBrowse,
+		&m_btnStartupAdd, &m_startupStatusText
+	};
+	for (CWnd* control : controls)
+	{
+		control->SetFont(&m_settingsFont);
+		SetWindowTheme(control->GetSafeHwnd(), L"Explorer", nullptr);
+	}
+
+	LoadStartupItems();
+	UpdateStartupControlLayout();
+	UpdateStartupButtons();
+}
+
 // 按当前 SSD 页几何参数更新页签控件位置。
 void CMFCApplication1Dlg::UpdateSsdControlLayout()
 {
@@ -4746,6 +4939,416 @@ void CMFCApplication1Dlg::RefreshSsdTabs()
 	{
 		m_ssdRows = m_ssdDiskRows[static_cast<size_t>(m_activeSsdIndex)];
 	}
+}
+
+void CMFCApplication1Dlg::UpdateStartupControlLayout()
+{
+	if (!::IsWindow(m_startupList.GetSafeHwnd()))
+	{
+		return;
+	}
+
+	const int actionHeight = 248;
+	const CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
+	const CRect listCardRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - actionHeight - 16);
+	const CRect actionCardRect(m_contentRect.left + 8, listCardRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
+	const int inner = 12;
+	const int buttonHeight = 34;
+	const int editHeight = 30;
+	const int gap = 8;
+
+	m_startupList.MoveWindow(listCardRect.left + inner, listCardRect.top + inner,
+		max(80, listCardRect.Width() - inner * 2), max(80, listCardRect.Height() - inner * 2), TRUE);
+
+	const int actionLeft = actionCardRect.left + inner;
+	const int actionRight = actionCardRect.right - inner;
+	const int firstRowTop = actionCardRect.top + 12;
+	const int buttonWidth = 92;
+	m_btnStartupEnable.MoveWindow(actionLeft, firstRowTop, buttonWidth, buttonHeight, TRUE);
+	m_btnStartupDisable.MoveWindow(actionLeft + buttonWidth + gap, firstRowTop, buttonWidth, buttonHeight, TRUE);
+	m_btnStartupDelete.MoveWindow(actionLeft + (buttonWidth + gap) * 2, firstRowTop, buttonWidth, buttonHeight, TRUE);
+	m_btnStartupRefresh.MoveWindow(actionLeft + (buttonWidth + gap) * 3, firstRowTop, buttonWidth, buttonHeight, TRUE);
+	const int statusLeft = actionLeft + (buttonWidth + gap) * 4 + 18;
+	m_startupStatusText.MoveWindow(statusLeft, firstRowTop, max(180, actionRight - statusLeft), buttonHeight, TRUE);
+
+	const int labelTop = actionCardRect.top + 100;
+	const int secondRowTop = actionCardRect.top + 142;
+	const int addButtonWidth = 118;
+	const int browseWidth = 72;
+	const int nameWidth = max(220, min(320, (actionCardRect.Width() - inner * 2) / 4));
+	const int pathLeft = actionLeft + nameWidth + gap;
+	const int pathRight = actionRight - browseWidth - gap - addButtonWidth - gap;
+	m_labelStartupName.MoveWindow(actionLeft, labelTop, nameWidth, 30, TRUE);
+	m_labelStartupPath.MoveWindow(pathLeft, labelTop, max(160, pathRight - pathLeft), 30, TRUE);
+	m_editStartupName.MoveWindow(actionLeft, secondRowTop, nameWidth, editHeight, TRUE);
+	m_editStartupPath.MoveWindow(pathLeft, secondRowTop, max(140, pathRight - pathLeft), editHeight, TRUE);
+	m_btnStartupBrowse.MoveWindow(pathRight + gap, secondRowTop - 2, browseWidth, buttonHeight, TRUE);
+	m_btnStartupAdd.MoveWindow(actionRight - addButtonWidth, secondRowTop - 2, addButtonWidth, buttonHeight, TRUE);
+
+	const int listWidth = max(300, listCardRect.Width() - inner * 2);
+	m_startupList.SetColumnWidth(0, max(180, listWidth / 5));
+	m_startupList.SetColumnWidth(1, 104);
+	m_startupList.SetColumnWidth(2, max(210, listWidth / 5));
+	m_startupList.SetColumnWidth(3, max(240, listWidth - m_startupList.GetColumnWidth(0) - m_startupList.GetColumnWidth(1) - m_startupList.GetColumnWidth(2) - 8));
+}
+
+void CMFCApplication1Dlg::LoadStartupItems()
+{
+	m_startupItems.clear();
+
+	auto addRegistryItems = [this](HKEY rootKey, bool disabled, const CString& label, StartupSource source)
+		{
+			HKEY key = nullptr;
+			const CString subKey = StartupRunSubKey(disabled);
+			if (RegOpenKeyEx(rootKey, subKey, 0, KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
+			{
+				return;
+			}
+
+			DWORD index = 0;
+			for (;;)
+			{
+				TCHAR valueName[512] = {};
+				BYTE data[4096] = {};
+				DWORD valueNameChars = _countof(valueName);
+				DWORD dataBytes = sizeof(data);
+				DWORD type = 0;
+				const LSTATUS status = RegEnumValue(key, index, valueName, &valueNameChars, nullptr, &type, data, &dataBytes);
+				if (status == ERROR_NO_MORE_ITEMS)
+				{
+					break;
+				}
+				++index;
+				if (status != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ))
+				{
+					continue;
+				}
+
+				StartupItem item;
+				item.name = valueName;
+				item.command = reinterpret_cast<LPCTSTR>(data);
+				item.sourceLabel = label;
+				item.location = subKey;
+				item.source = source;
+				item.enabled = !disabled;
+				m_startupItems.push_back(item);
+			}
+			RegCloseKey(key);
+		};
+
+	addRegistryItems(HKEY_CURRENT_USER, false, _T("当前用户 Run"), StartupSource::HkcuRun);
+	addRegistryItems(HKEY_LOCAL_MACHINE, false, _T("所有用户 Run"), StartupSource::HklmRun);
+	addRegistryItems(HKEY_CURRENT_USER, true, _T("当前用户 Run（已禁用）"), StartupSource::HkcuRunDisabled);
+	addRegistryItems(HKEY_LOCAL_MACHINE, true, _T("所有用户 Run（已禁用）"), StartupSource::HklmRunDisabled);
+
+	auto addFolderItems = [this](const CString& folder, const CString& label, StartupSource enabledSource, StartupSource disabledSource)
+		{
+			if (folder.IsEmpty() || !PathFileExists(folder))
+			{
+				return;
+			}
+
+			const CString disabledFolder = CombinePath(folder, _T("SystemInspectorDisabledStartup"));
+			CFileFind finder;
+			BOOL working = finder.FindFile(CombinePath(folder, _T("*.*")));
+			while (working)
+			{
+				working = finder.FindNextFile();
+				if (finder.IsDots() || finder.IsDirectory())
+				{
+					continue;
+				}
+
+				StartupItem item;
+				item.name = finder.GetFileName();
+				item.command = finder.GetFilePath();
+				item.sourceLabel = label;
+				item.location = finder.GetFilePath();
+				item.disabledLocation = EnsureUniqueFilePath(disabledFolder, item.name);
+				item.source = enabledSource;
+				item.enabled = true;
+				m_startupItems.push_back(item);
+			}
+			finder.Close();
+
+			if (!PathFileExists(disabledFolder))
+			{
+				return;
+			}
+
+			CFileFind disabledFinder;
+			working = disabledFinder.FindFile(CombinePath(disabledFolder, _T("*.*")));
+			while (working)
+			{
+				working = disabledFinder.FindNextFile();
+				if (disabledFinder.IsDots() || disabledFinder.IsDirectory())
+				{
+					continue;
+				}
+
+				StartupItem item;
+				item.name = disabledFinder.GetFileName();
+				item.command = disabledFinder.GetFilePath();
+				item.sourceLabel = label + _T("（已禁用）");
+				item.location = disabledFinder.GetFilePath();
+				item.disabledLocation = EnsureUniqueFilePath(folder, item.name);
+				item.source = disabledSource;
+				item.enabled = false;
+				m_startupItems.push_back(item);
+			}
+			disabledFinder.Close();
+		};
+
+	addFolderItems(KnownFolderPath(FOLDERID_Startup), _T("当前用户启动文件夹"), StartupSource::UserStartupFolder, StartupSource::UserStartupFolderDisabled);
+	addFolderItems(KnownFolderPath(FOLDERID_CommonStartup), _T("所有用户启动文件夹"), StartupSource::CommonStartupFolder, StartupSource::CommonStartupFolderDisabled);
+	RefreshStartupList();
+}
+
+void CMFCApplication1Dlg::RefreshStartupList()
+{
+	if (!::IsWindow(m_startupList.GetSafeHwnd()))
+	{
+		return;
+	}
+
+	m_startupList.DeleteAllItems();
+	for (size_t i = 0; i < m_startupItems.size(); ++i)
+	{
+		const StartupItem& item = m_startupItems[i];
+		const int row = m_startupList.InsertItem(static_cast<int>(i), item.name);
+		m_startupList.SetItemText(row, 1, item.enabled ? _T("已启用") : _T("已禁用"));
+		m_startupList.SetItemText(row, 2, item.sourceLabel);
+		m_startupList.SetItemText(row, 3, item.command);
+	}
+	UpdateStartupButtons();
+}
+
+int CMFCApplication1Dlg::GetSelectedStartupIndex() const
+{
+	if (!::IsWindow(m_startupList.GetSafeHwnd()))
+	{
+		return -1;
+	}
+
+	POSITION pos = m_startupList.GetFirstSelectedItemPosition();
+	if (pos == nullptr)
+	{
+		return -1;
+	}
+	return m_startupList.GetNextSelectedItem(pos);
+}
+
+void CMFCApplication1Dlg::UpdateStartupButtons()
+{
+	const int index = GetSelectedStartupIndex();
+	const bool hasSelection = index >= 0 && index < static_cast<int>(m_startupItems.size());
+	const bool enabled = hasSelection && m_startupItems[static_cast<size_t>(index)].enabled;
+	if (::IsWindow(m_btnStartupEnable.GetSafeHwnd()))
+	{
+		m_btnStartupEnable.EnableWindow(hasSelection && !enabled);
+		m_btnStartupDisable.EnableWindow(hasSelection && enabled);
+		m_btnStartupDelete.EnableWindow(hasSelection);
+	}
+}
+
+void CMFCApplication1Dlg::SetStartupStatusText(const CString& text)
+{
+	if (::IsWindow(m_startupStatusText.GetSafeHwnd()))
+	{
+		m_startupStatusText.SetWindowText(text);
+	}
+}
+
+bool CMFCApplication1Dlg::SetSelectedStartupItemEnabled(bool enable)
+{
+	const int index = GetSelectedStartupIndex();
+	if (index < 0 || index >= static_cast<int>(m_startupItems.size()))
+	{
+		SetStartupStatusText(_T("请先选择启动项。"));
+		return false;
+	}
+
+	const StartupItem item = m_startupItems[static_cast<size_t>(index)];
+	if (item.enabled == enable)
+	{
+		return true;
+	}
+
+	auto moveRegistryValue = [](HKEY rootKey, const CString& fromSubKey, const CString& toSubKey, const CString& valueName) -> bool
+		{
+			HKEY fromKey = nullptr;
+			if (RegOpenKeyEx(rootKey, fromSubKey, 0, KEY_READ | KEY_SET_VALUE | KEY_WOW64_64KEY, &fromKey) != ERROR_SUCCESS)
+			{
+				return false;
+			}
+
+			DWORD type = 0;
+			BYTE data[4096] = {};
+			DWORD dataBytes = sizeof(data);
+			const LSTATUS readStatus = RegQueryValueEx(fromKey, valueName, nullptr, &type, data, &dataBytes);
+			if (readStatus != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ))
+			{
+				RegCloseKey(fromKey);
+				return false;
+			}
+
+			HKEY toKey = nullptr;
+			if (RegCreateKeyEx(rootKey, toSubKey, 0, nullptr, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &toKey, nullptr) != ERROR_SUCCESS)
+			{
+				RegCloseKey(fromKey);
+				return false;
+			}
+
+			const bool ok = RegSetValueEx(toKey, valueName, 0, type, data, dataBytes) == ERROR_SUCCESS &&
+				RegDeleteValue(fromKey, valueName) == ERROR_SUCCESS;
+			RegCloseKey(toKey);
+			RegCloseKey(fromKey);
+			return ok;
+		};
+
+	bool ok = false;
+	switch (item.source)
+	{
+	case StartupSource::HkcuRun:
+		ok = moveRegistryValue(HKEY_CURRENT_USER, StartupRunSubKey(false), StartupRunSubKey(true), item.name);
+		break;
+	case StartupSource::HklmRun:
+		ok = moveRegistryValue(HKEY_LOCAL_MACHINE, StartupRunSubKey(false), StartupRunSubKey(true), item.name);
+		break;
+	case StartupSource::HkcuRunDisabled:
+		ok = moveRegistryValue(HKEY_CURRENT_USER, StartupRunSubKey(true), StartupRunSubKey(false), item.name);
+		break;
+	case StartupSource::HklmRunDisabled:
+		ok = moveRegistryValue(HKEY_LOCAL_MACHINE, StartupRunSubKey(true), StartupRunSubKey(false), item.name);
+		break;
+	case StartupSource::UserStartupFolder:
+	case StartupSource::CommonStartupFolder:
+		CreateDirectory(ParentDirectory(item.disabledLocation), nullptr);
+		ok = MoveFileEx(item.location, item.disabledLocation, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING) == TRUE;
+		break;
+	case StartupSource::UserStartupFolderDisabled:
+	case StartupSource::CommonStartupFolderDisabled:
+		ok = MoveFileEx(item.location, item.disabledLocation, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING) == TRUE;
+		break;
+	default:
+		break;
+	}
+
+	if (ok)
+	{
+		LoadStartupItems();
+		SetStartupStatusText(enable ? _T("启动项已启用。") : _T("启动项已禁用。"));
+	}
+	else
+	{
+		SetStartupStatusText(_T("操作失败，请确认管理员权限或文件占用状态。"));
+	}
+	return ok;
+}
+
+bool CMFCApplication1Dlg::DeleteSelectedStartupItem()
+{
+	const int index = GetSelectedStartupIndex();
+	if (index < 0 || index >= static_cast<int>(m_startupItems.size()))
+	{
+		SetStartupStatusText(_T("请先选择启动项。"));
+		return false;
+	}
+
+	const StartupItem item = m_startupItems[static_cast<size_t>(index)];
+	CString prompt;
+	prompt.Format(_T("确认删除启动项“%s”？\r\n\r\n此操作会删除对应的注册表值或启动文件夹文件。"), item.name.GetString());
+	if (AfxMessageBox(prompt, MB_ICONWARNING | MB_YESNO) != IDYES)
+	{
+		return false;
+	}
+
+	auto deleteRegistryValue = [](HKEY rootKey, const CString& subKey, const CString& valueName) -> bool
+		{
+			HKEY key = nullptr;
+			if (RegOpenKeyEx(rootKey, subKey, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
+			{
+				return false;
+			}
+			const bool ok = RegDeleteValue(key, valueName) == ERROR_SUCCESS;
+			RegCloseKey(key);
+			return ok;
+		};
+
+	bool ok = false;
+	switch (item.source)
+	{
+	case StartupSource::HkcuRun:
+		ok = deleteRegistryValue(HKEY_CURRENT_USER, StartupRunSubKey(false), item.name);
+		break;
+	case StartupSource::HklmRun:
+		ok = deleteRegistryValue(HKEY_LOCAL_MACHINE, StartupRunSubKey(false), item.name);
+		break;
+	case StartupSource::HkcuRunDisabled:
+		ok = deleteRegistryValue(HKEY_CURRENT_USER, StartupRunSubKey(true), item.name);
+		break;
+	case StartupSource::HklmRunDisabled:
+		ok = deleteRegistryValue(HKEY_LOCAL_MACHINE, StartupRunSubKey(true), item.name);
+		break;
+	case StartupSource::UserStartupFolder:
+	case StartupSource::CommonStartupFolder:
+	case StartupSource::UserStartupFolderDisabled:
+	case StartupSource::CommonStartupFolderDisabled:
+		ok = DeleteFile(item.location) == TRUE;
+		break;
+	default:
+		break;
+	}
+
+	if (ok)
+	{
+		LoadStartupItems();
+		SetStartupStatusText(_T("启动项已删除。"));
+	}
+	else
+	{
+		SetStartupStatusText(_T("删除失败，请确认管理员权限或文件占用状态。"));
+	}
+	return ok;
+}
+
+bool CMFCApplication1Dlg::AddStartupItem(const CString& name, const CString& command, CString& errorMessage)
+{
+	errorMessage.Empty();
+	CString itemName = Trimmed(name);
+	CString itemCommand = Trimmed(command);
+	if (itemName.IsEmpty())
+	{
+		errorMessage = _T("启动项名称不能为空。");
+		return false;
+	}
+	if (itemCommand.IsEmpty())
+	{
+		errorMessage = _T("启动项路径不能为空。");
+		return false;
+	}
+
+	if (PathFileExists(itemCommand))
+	{
+		itemCommand = QuoteCommandPath(itemCommand);
+	}
+
+	HKEY key = nullptr;
+	if (RegCreateKeyEx(HKEY_CURRENT_USER, StartupRunSubKey(false), 0, nullptr, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &key, nullptr) != ERROR_SUCCESS)
+	{
+		errorMessage = _T("无法打开当前用户 Run 注册表项。");
+		return false;
+	}
+
+	const DWORD bytes = static_cast<DWORD>((itemCommand.GetLength() + 1) * sizeof(TCHAR));
+	const bool ok = RegSetValueEx(key, itemName, 0, REG_SZ, reinterpret_cast<const BYTE*>(static_cast<LPCTSTR>(itemCommand)), bytes) == ERROR_SUCCESS;
+	RegCloseKey(key);
+	if (!ok)
+	{
+		errorMessage = _T("写入启动项失败。");
+		return false;
+	}
+	return true;
 }
 
 // 按当前页面几何参数更新设置控件位置。
@@ -4844,6 +5447,8 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	const bool showSsd = (m_activePage == PAGE_SSD_INFO);
 	const bool showScreen = (m_activePage == PAGE_SCREEN_INFO);
 	const bool showStatus = (m_activePage == PAGE_SYSTEM_STATUS);
+	const bool showStartup = (m_activePage == PAGE_STARTUP_ITEMS);
+	const int startupCmd = showStartup ? SW_SHOW : SW_HIDE;
 	for (CButton* checkBox : GetOptionCheckBoxes())
 	{
 		if (::IsWindow(checkBox->GetSafeHwnd()))
@@ -4866,6 +5471,22 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 		m_ssdTab.ShowWindow(showSsd ? SW_SHOW : SW_HIDE);
 	}
 
+	if (::IsWindow(m_startupList.GetSafeHwnd()))
+	{
+		m_startupList.ShowWindow(startupCmd);
+		m_btnStartupEnable.ShowWindow(startupCmd);
+		m_btnStartupDisable.ShowWindow(startupCmd);
+		m_btnStartupDelete.ShowWindow(startupCmd);
+		m_btnStartupRefresh.ShowWindow(startupCmd);
+		m_labelStartupName.ShowWindow(startupCmd);
+		m_labelStartupPath.ShowWindow(startupCmd);
+		m_editStartupName.ShowWindow(startupCmd);
+		m_editStartupPath.ShowWindow(startupCmd);
+		m_btnStartupBrowse.ShowWindow(startupCmd);
+		m_btnStartupAdd.ShowWindow(startupCmd);
+		m_startupStatusText.ShowWindow(startupCmd);
+	}
+
 	if (showSettings)
 	{
 		m_scrollPos = 0;
@@ -4885,6 +5506,12 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	{
 		m_scrollPos = 0;
 	}
+	else if (showStartup)
+	{
+		m_scrollPos = 0;
+		UpdateStartupControlLayout();
+		UpdateStartupButtons();
+	}
 }
 
 // 处理 SSD 页签切换，展示对应磁盘信息。
@@ -4903,6 +5530,81 @@ void CMFCApplication1Dlg::OnTcnSelchangeSsdTab(NMHDR* pNMHDR, LRESULT* pResult)
 	*pResult = 0;
 }
 
+void CMFCApplication1Dlg::OnLvnItemchangedStartupList(NMHDR* pNMHDR, LRESULT* pResult)
+{
+	UNREFERENCED_PARAMETER(pNMHDR);
+	UpdateStartupButtons();
+	*pResult = 0;
+}
+
+void CMFCApplication1Dlg::OnBnClickedStartupEnable()
+{
+	SetSelectedStartupItemEnabled(true);
+}
+
+void CMFCApplication1Dlg::OnBnClickedStartupDisable()
+{
+	SetSelectedStartupItemEnabled(false);
+}
+
+void CMFCApplication1Dlg::OnBnClickedStartupDelete()
+{
+	DeleteSelectedStartupItem();
+}
+
+void CMFCApplication1Dlg::OnBnClickedStartupRefresh()
+{
+	LoadStartupItems();
+	SetStartupStatusText(_T("启动项列表已刷新。"));
+}
+
+void CMFCApplication1Dlg::OnBnClickedStartupBrowse()
+{
+	CFileDialog dialog(TRUE, _T("exe"), nullptr,
+		OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
+		_T("可执行文件 (*.exe;*.bat;*.cmd;*.lnk)|*.exe;*.bat;*.cmd;*.lnk|所有文件 (*.*)|*.*||"),
+		this);
+	if (dialog.DoModal() != IDOK)
+	{
+		return;
+	}
+
+	const CString path = dialog.GetPathName();
+	m_editStartupPath.SetWindowText(path);
+	CString name;
+	m_editStartupName.GetWindowText(name);
+	if (Trimmed(name).IsEmpty())
+	{
+		CString fileName = FileNameFromPath(path);
+		const int dot = fileName.ReverseFind(_T('.'));
+		if (dot > 0)
+		{
+			fileName = fileName.Left(dot);
+		}
+		m_editStartupName.SetWindowText(fileName);
+	}
+}
+
+void CMFCApplication1Dlg::OnBnClickedStartupAdd()
+{
+	CString name;
+	CString path;
+	m_editStartupName.GetWindowText(name);
+	m_editStartupPath.GetWindowText(path);
+
+	CString error;
+	if (!AddStartupItem(name, path, error))
+	{
+		SetStartupStatusText(error);
+		return;
+	}
+
+	m_editStartupName.SetWindowText(_T(""));
+	m_editStartupPath.SetWindowText(_T(""));
+	LoadStartupItems();
+	SetStartupStatusText(_T("启动项已添加到当前用户 Run。"));
+}
+
 // 更新状态提示文字（颜色参数保留给后续扩展）。
 void CMFCApplication1Dlg::SetStatusText(const CString& text, COLORREF color)
 {
@@ -4917,12 +5619,30 @@ void CMFCApplication1Dlg::SetStatusText(const CString& text, COLORREF color)
 HBRUSH CMFCApplication1Dlg::OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor)
 {
 	HBRUSH hbr = CDialogEx::OnCtlColor(pDC, pWnd, nCtlColor);
-	if (m_activePage != PAGE_SYSTEM_SETTINGS || pWnd == nullptr)
+	if ((m_activePage != PAGE_SYSTEM_SETTINGS && m_activePage != PAGE_STARTUP_ITEMS) || pWnd == nullptr)
 	{
 		return hbr;
 	}
 
 	const UINT id = static_cast<UINT>(pWnd->GetDlgCtrlID());
+	if (m_activePage == PAGE_STARTUP_ITEMS)
+	{
+		if (id != IDC_STARTUP_STATUS &&
+			id != IDC_STARTUP_NAME_LABEL &&
+			id != IDC_STARTUP_PATH_LABEL &&
+			id != IDC_STARTUP_NAME &&
+			id != IDC_STARTUP_PATH)
+		{
+			return hbr;
+		}
+		pDC->SetBkMode(TRANSPARENT);
+		pDC->SetBkColor(UiSurfaceAlt);
+		pDC->SetTextColor((id == IDC_STARTUP_NAME_LABEL || id == IDC_STARTUP_PATH_LABEL) ? UiSecondaryText : UiText);
+		return (id == IDC_STARTUP_STATUS || id == IDC_STARTUP_NAME_LABEL || id == IDC_STARTUP_PATH_LABEL)
+			? static_cast<HBRUSH>(m_uiBackgroundBrush.GetSafeHandle())
+			: hbr;
+	}
+
 	const bool isSettingsCtrl =
 		(id >= IDC_CHK_UAC && id <= IDC_CHK_WINDOWS_UPDATE) ||
 		id == IDC_STATUS_TEXT ||

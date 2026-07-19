@@ -67,10 +67,24 @@ protected:
 	afx_msg void OnBnClickedRebootSystem();
 	// 处理“全选/取消全选”按钮点击。
 	afx_msg void OnBnClickedToggleSelect();
+	// 处理启动项启用按钮点击。
+	afx_msg void OnBnClickedStartupEnable();
+	// 处理启动项禁用按钮点击。
+	afx_msg void OnBnClickedStartupDisable();
+	// 处理启动项删除按钮点击。
+	afx_msg void OnBnClickedStartupDelete();
+	// 处理启动项刷新按钮点击。
+	afx_msg void OnBnClickedStartupRefresh();
+	// 处理启动项浏览按钮点击。
+	afx_msg void OnBnClickedStartupBrowse();
+	// 处理启动项添加按钮点击。
+	afx_msg void OnBnClickedStartupAdd();
 	// 处理设置项勾选变化。
 	afx_msg void OnSettingsOptionChanged(UINT nID);
 	// 处理 SSD Tab 切换事件。
 	afx_msg void OnTcnSelchangeSsdTab(NMHDR* pNMHDR, LRESULT* pResult);
+	// 处理启动项列表选择变化。
+	afx_msg void OnLvnItemchangedStartupList(NMHDR* pNMHDR, LRESULT* pResult);
 	DECLARE_MESSAGE_MAP()
 public:
 	// 初始化页面基础布局参数。
@@ -93,6 +107,8 @@ public:
 	void DrawScreenInformation(CDC& dc, const CRect& clientRect);
 	// 绘制“系统状态”页面。
 	void DrawSystemStatus(CDC& dc, const CRect& clientRect);
+	// 绘制“启动项”页面。
+	void DrawStartupItems(CDC& dc, const CRect& clientRect);
 	// 绘制“系统设置”页面。
 	void DrawSystemSettings(CDC& dc, const CRect& clientRect);
 	// 读取并整理屏幕 EDID 详情。
@@ -111,6 +127,26 @@ public:
 	void CreateSsdControls();
 	// 更新 SSD 页签控件位置与尺寸。
 	void UpdateSsdControlLayout();
+	// 动态创建启动项页控件。
+	void CreateStartupControls();
+	// 更新启动项页控件位置与尺寸。
+	void UpdateStartupControlLayout();
+	// 读取启动项并刷新列表。
+	void LoadStartupItems();
+	// 将启动项数据同步到列表控件。
+	void RefreshStartupList();
+	// 根据当前选择刷新启动项按钮可用状态。
+	void UpdateStartupButtons();
+	// 设置启动项页状态文字。
+	void SetStartupStatusText(const CString& text);
+	// 获取当前选中的启动项下标。
+	int GetSelectedStartupIndex() const;
+	// 启用或禁用当前选中的启动项。
+	bool SetSelectedStartupItemEnabled(bool enable);
+	// 删除当前选中的启动项。
+	bool DeleteSelectedStartupItem();
+	// 添加当前用户开机启动项。
+	bool AddStartupItem(const CString& name, const CString& command, CString& errorMessage);
 	// 按当前 SSD 数据刷新页签。
 	void RefreshSsdTabs();
 	// 根据当前页切换控件可见性。
@@ -179,6 +215,29 @@ private:
 		int activeSsdIndex = 0;
 	};
 
+	enum class StartupSource
+	{
+		HkcuRun,
+		HklmRun,
+		HkcuRunDisabled,
+		HklmRunDisabled,
+		UserStartupFolder,
+		CommonStartupFolder,
+		UserStartupFolderDisabled,
+		CommonStartupFolderDisabled
+	};
+
+	struct StartupItem
+	{
+		CString name;
+		CString command;
+		CString sourceLabel;
+		CString location;
+		CString disabledLocation;
+		StartupSource source = StartupSource::HkcuRun;
+		bool enabled = true;
+	};
+
 	static UINT LoadSystemInformationThread(LPVOID parameter);
 	static UINT LoadSsdInformationThread(LPVOID parameter);
 	static UINT LoadScreenInformationThread(LPVOID parameter);
@@ -206,6 +265,7 @@ private:
 	CRect m_contentRect;
 	CRect m_infoMenuRect;
 	CRect m_statusMenuRect;
+	CRect m_startupMenuRect;
 	CRect m_settingsMenuRect;
 	CRect m_ssdMenuRect;
 	CRect m_screenMenuRect;
@@ -231,4 +291,17 @@ private:
 	CStatic m_statusText;
 	CStatic m_adminHintText;
 	CTabCtrl m_ssdTab;
+	CListCtrl m_startupList;
+	CButton m_btnStartupEnable;
+	CButton m_btnStartupDisable;
+	CButton m_btnStartupDelete;
+	CButton m_btnStartupRefresh;
+	CStatic m_labelStartupName;
+	CStatic m_labelStartupPath;
+	CEdit m_editStartupName;
+	CEdit m_editStartupPath;
+	CButton m_btnStartupBrowse;
+	CButton m_btnStartupAdd;
+	CStatic m_startupStatusText;
+	std::vector<StartupItem> m_startupItems;
 };
