@@ -109,6 +109,8 @@ public:
 	void DrawSystemStatus(CDC& dc, const CRect& clientRect);
 	// 绘制“启动项”页面。
 	void DrawStartupItems(CDC& dc, const CRect& clientRect);
+	// 绘制“硬件详情”页面。
+	void DrawAcpiInformation(CDC& dc, const CRect& clientRect);
 	// 绘制“系统设置”页面。
 	void DrawSystemSettings(CDC& dc, const CRect& clientRect);
 	// 读取并整理屏幕 EDID 详情。
@@ -208,6 +210,7 @@ private:
 	{
 		std::vector<InfoRow> systemRows;
 		std::vector<InfoRow> systemStatusRows;
+		std::vector<InfoRow> acpiRows;
 		std::vector<InfoRow> ssdRows;
 		std::vector<InfoRow> screenRows;
 		std::vector<std::vector<InfoRow>> ssdDiskRows;
@@ -246,6 +249,7 @@ private:
 	// 系统信息数据与绘制资源。
 	std::vector<InfoRow> m_systemRows;
 	std::vector<InfoRow> m_systemStatusRows;
+	std::vector<InfoRow> m_acpiRows;
 	std::vector<InfoRow> m_ssdRows;
 	std::vector<InfoRow> m_screenRows;
 	std::vector<std::vector<InfoRow>> m_ssdDiskRows;
@@ -266,6 +270,7 @@ private:
 	CRect m_infoMenuRect;
 	CRect m_statusMenuRect;
 	CRect m_startupMenuRect;
+	CRect m_acpiMenuRect;
 	CRect m_settingsMenuRect;
 	CRect m_ssdMenuRect;
 	CRect m_screenMenuRect;

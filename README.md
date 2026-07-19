@@ -26,6 +26,13 @@ Windows 系统检测与系统设置优化工具（MFC / C++）。
   - 支持启用、禁用、删除启动项
   - 支持添加当前用户自定义开机启动项
 
+- **硬件详情**
+  - 展示 CPU 制造商、名称、核心/线程、频率、CPUID 签名、虚拟化和指令集信息
+  - 展示 GPU 显存、驱动版本、当前显示模式、PNP ID 等信息；显存优先从显示适配器硬件信息读取，避免 WMI 异常值
+  - 内存按每根 DIMM 独立行展示，包含插槽、容量、类型、频率、厂商、Part Number 和序列号
+  - 对常见内存厂商 VID 做友好名称映射，无法识别时保留原始厂商值
+  - 基于 WMI 展示 BIOS/SMBIOS、主板、机箱和系统产品信息
+
 - **屏幕详情**
   - 读取当前活动显示器并解析 EDID
   - 展示显示器名称、ID、EDID 日期、版本、序列号、刷新率、校验和
@@ -53,12 +60,14 @@ Windows 系统检测与系统设置优化工具（MFC / C++）。
 SystemInspector.exe -Report SSD "D:\Temp\ssd-report.txt"
 SystemInspector.exe -Report SYSTEM "D:\Temp\system-report.txt"
 SystemInspector.exe -Report STATUS "D:\Temp\status-report.txt"
+SystemInspector.exe -Report ACPI "D:\Temp\acpi-report.txt"
 SystemInspector.exe -Report EDID "D:\Temp\edid-report.txt"
 ```
 
 - `SSD`：导出 SSD 信息（多盘分段）
 - `SYSTEM`：导出系统信息
 - `STATUS`：导出系统状态（Windows 版本、激活状态、Secure Boot、BitLocker 等）
+- `ACPI`：导出硬件详情（CPU、GPU、内存、BIOS/SMBIOS、主板、机箱等）
 - `EDID`：导出屏幕详情
 - 导出完成后程序才会退出；如在 `cmd` 脚本里串行调用 GUI 程序，请使用 `start "" /wait SystemInspector.exe -Report ...`
 

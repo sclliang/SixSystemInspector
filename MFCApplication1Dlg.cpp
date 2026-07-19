@@ -20,7 +20,9 @@
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <ShlObj.h>
+#include <intrin.h>
 #include <cwctype>
+#include <cstring>
 #include <cmath>
 #include <map>
 #include <set>
@@ -67,6 +69,7 @@ namespace
 	constexpr int PAGE_SCREEN_INFO = 3;
 	constexpr int PAGE_SYSTEM_STATUS = 4;
 	constexpr int PAGE_STARTUP_ITEMS = 5;
+	constexpr int PAGE_ACPI_INFO = 6;
 	constexpr UINT IDC_CHK_UAC = 3001;
 	constexpr UINT IDC_CHK_FIREWALL = 3002;
 	constexpr UINT IDC_CHK_SEC_CENTER = 3003;
@@ -110,6 +113,7 @@ namespace
 	bool EnsureComInitialized();
 	CString VariantToCString(VARIANT& var);
 	CString JoinUniqueValues(const std::set<CString, std::less<>>& values, const CString& separator);
+	CString FormatWmiDateTime(const CString& wmiDateTime);
 	int ExtractPhysicalDriveId(const CString& devicePath);
 	std::vector<std::vector<CString>> QueryWmiRows(
 		const CString& wmiNamespace,
@@ -2196,6 +2200,307 @@ namespace
 		return result;
 	}
 
+	CString VideoModeText(const CString& width, const CString& height, const CString& refreshRate, const CString& bitsPerPixel)
+	{
+		if (!HasValue(width) || !HasValue(height))
+		{
+			return _T("");
+		}
+
+		CString text;
+		text.Format(_T("%s x %s"), width.GetString(), height.GetString());
+		if (HasValue(refreshRate))
+		{
+			text += _T(" @ ");
+			text += refreshRate;
+			text += _T(" Hz");
+		}
+		if (HasValue(bitsPerPixel))
+		{
+			text += _T(" / ");
+			text += bitsPerPixel;
+			text += _T("-bit");
+		}
+		return text;
+	}
+
+	unsigned long long ResolveDisplayAdapterMemoryBytes(const CString& pnpDeviceId, const CString& adapterRam)
+	{
+		const CString deviceParamsKey = _T("SYSTEM\\CurrentControlSet\\Enum\\") + pnpDeviceId + _T("\\Device Parameters");
+		ULONGLONG qwordValue = 0;
+		DWORD valueBytes = sizeof(qwordValue);
+		LSTATUS status = RegGetValue(
+			HKEY_LOCAL_MACHINE,
+			deviceParamsKey,
+			_T("HardwareInformation.qwMemorySize"),
+			RRF_RT_REG_QWORD,
+			nullptr,
+			&qwordValue,
+			&valueBytes);
+		if (status == ERROR_SUCCESS && qwordValue > 0)
+		{
+			return static_cast<unsigned long long>(qwordValue);
+		}
+
+		DWORD dwordValue = 0;
+		valueBytes = sizeof(dwordValue);
+		status = RegGetValue(
+			HKEY_LOCAL_MACHINE,
+			deviceParamsKey,
+			_T("HardwareInformation.MemorySize"),
+			RRF_RT_REG_DWORD,
+			nullptr,
+			&dwordValue,
+			&valueBytes);
+		if (status == ERROR_SUCCESS && dwordValue > 0)
+		{
+			return static_cast<unsigned long long>(dwordValue);
+		}
+
+		const unsigned long long bytes = ParseUnsignedLongLong(adapterRam);
+		const unsigned long long minReasonable = 32ull * 1024ull * 1024ull;
+		const unsigned long long maxReasonable = 128ull * 1024ull * 1024ull * 1024ull;
+		return (bytes >= minReasonable && bytes <= maxReasonable) ? bytes : 0;
+	}
+
+	CString ResolveGpuDetails()
+	{
+		const auto rows = QueryWmiRows(
+			_T("ROOT\\CIMV2"),
+			_T("SELECT Name, AdapterCompatibility, AdapterRAM, DriverVersion, DriverDate, VideoProcessor, CurrentHorizontalResolution, CurrentVerticalResolution, CurrentRefreshRate, CurrentBitsPerPixel, PNPDeviceID, Status FROM Win32_VideoController"),
+			{ _T("Name"), _T("AdapterCompatibility"), _T("AdapterRAM"), _T("DriverVersion"), _T("DriverDate"), _T("VideoProcessor"), _T("CurrentHorizontalResolution"), _T("CurrentVerticalResolution"), _T("CurrentRefreshRate"), _T("CurrentBitsPerPixel"), _T("PNPDeviceID"), _T("Status") });
+
+		CString result;
+		unsigned int index = 0;
+		for (const auto& row : rows)
+		{
+			if (row.size() < 12 || !HasValue(row[0]) || IsVirtualGpuAdapter(row[0], row[10]))
+			{
+				continue;
+			}
+
+			++index;
+			if (!result.IsEmpty())
+			{
+				result += _T("\r\n\r\n");
+			}
+
+			CString title;
+			title.Format(_T("[%u] %s"), index, row[0].GetString());
+			result += title;
+			if (HasValue(row[1]))
+			{
+				result += _T("\r\n厂商: ");
+				result += row[1];
+			}
+
+			const unsigned long long adapterRam = ResolveDisplayAdapterMemoryBytes(row[10], row[2]);
+			if (adapterRam > 0)
+			{
+				result += _T("\r\n显存: ");
+				result += FormatBytesToGB(adapterRam);
+			}
+			else
+			{
+				result += _T("\r\n显存: N/A");
+			}
+			if (HasValue(row[3]))
+			{
+				result += _T("\r\n驱动版本: ");
+				result += row[3];
+			}
+			if (HasValue(row[4]))
+			{
+				const CString driverDate = FormatWmiDateTime(row[4]);
+				result += _T("\r\n驱动日期: ");
+				result += HasValue(driverDate) ? driverDate : row[4];
+			}
+			if (HasValue(row[5]))
+			{
+				result += _T("\r\n视频处理器: ");
+				result += row[5];
+			}
+
+			const CString videoMode = VideoModeText(row[6], row[7], row[8], row[9]);
+			if (HasValue(videoMode))
+			{
+				result += _T("\r\n当前模式: ");
+				result += videoMode;
+			}
+			if (HasValue(row[11]))
+			{
+				result += _T("\r\n状态: ");
+				result += row[11];
+			}
+			if (HasValue(row[10]))
+			{
+				result += _T("\r\nPNP ID: ");
+				result += row[10];
+			}
+		}
+		return result;
+	}
+
+	CString MemoryTypeText(const CString& smbiosType, const CString& memoryType)
+	{
+		switch (_ttoi(smbiosType))
+		{
+		case 20: return _T("DDR");
+		case 21: return _T("DDR2");
+		case 24: return _T("DDR3");
+		case 26: return _T("DDR4");
+		case 34: return _T("DDR5");
+		case 35: return _T("LPDDR");
+		case 36: return _T("LPDDR2");
+		case 37: return _T("LPDDR3");
+		case 38: return _T("LPDDR4");
+		case 40: return _T("HBM");
+		case 41: return _T("HBM2");
+		case 42: return _T("DDR5");
+		case 43: return _T("LPDDR5");
+		default: break;
+		}
+
+		switch (_ttoi(memoryType))
+		{
+		case 20: return _T("DDR");
+		case 21: return _T("DDR2");
+		case 24: return _T("DDR3");
+		case 26: return _T("DDR4");
+		default: return HasValue(smbiosType) ? smbiosType : memoryType;
+		}
+	}
+
+	CString FormFactorText(const CString& formFactor)
+	{
+		switch (_ttoi(formFactor))
+		{
+		case 8: return _T("DIMM");
+		case 12: return _T("SODIMM");
+		case 13: return _T("SRIMM");
+		case 15: return _T("FB-DIMM");
+		default: return formFactor;
+		}
+	}
+
+	CString MemoryManufacturerText(const CString& manufacturer)
+	{
+		const CString value = Trimmed(manufacturer);
+		if (value.CompareNoCase(_T("0x0B92")) == 0 || value.CompareNoCase(_T("0B92")) == 0)
+		{
+			return _T("Kingbank");
+		}
+		if (value.CompareNoCase(_T("0x2C00")) == 0 || value.CompareNoCase(_T("2C00")) == 0)
+		{
+			return _T("Micron");
+		}
+		if (value.CompareNoCase(_T("0xCE00")) == 0 || value.CompareNoCase(_T("CE00")) == 0)
+		{
+			return _T("Samsung");
+		}
+		if (value.CompareNoCase(_T("0xAD00")) == 0 || value.CompareNoCase(_T("AD00")) == 0)
+		{
+			return _T("SK hynix");
+		}
+		return value;
+	}
+
+	std::vector<CString> ResolveMemoryDetailLines()
+	{
+		const auto rows = QueryWmiRows(
+			_T("ROOT\\CIMV2"),
+			_T("SELECT Capacity, Speed, ConfiguredClockSpeed, Manufacturer, PartNumber, SerialNumber, DeviceLocator, BankLabel, SMBIOSMemoryType, MemoryType, FormFactor FROM Win32_PhysicalMemory"),
+			{ _T("Capacity"), _T("Speed"), _T("ConfiguredClockSpeed"), _T("Manufacturer"), _T("PartNumber"), _T("SerialNumber"), _T("DeviceLocator"), _T("BankLabel"), _T("SMBIOSMemoryType"), _T("MemoryType"), _T("FormFactor") });
+
+		if (rows.empty())
+		{
+			return {};
+		}
+
+		unsigned long long totalBytes = 0;
+		for (const auto& row : rows)
+		{
+			if (!row.empty())
+			{
+				totalBytes += ParseUnsignedLongLong(row[0]);
+			}
+		}
+
+		std::vector<CString> lines;
+		if (totalBytes > 0)
+		{
+			CString summary;
+			summary.Format(_T("%s / %u 条"), FormatBytesToGB(totalBytes).GetString(), static_cast<unsigned>(rows.size()));
+			lines.push_back(summary);
+		}
+
+		for (size_t i = 0; i < rows.size(); ++i)
+		{
+			const auto& row = rows[i];
+			if (row.size() < 11)
+			{
+				continue;
+			}
+
+			CString line;
+			line = HasValue(row[6]) ? row[6] : _T("Memory Slot");
+
+			const unsigned long long capacity = ParseUnsignedLongLong(row[0]);
+			if (capacity > 0)
+			{
+				line += _T(" | ");
+				line += FormatBytesToGB(capacity);
+			}
+			const CString type = MemoryTypeText(row[8], row[9]);
+			if (HasValue(type))
+			{
+				line += _T(" ");
+				line += type;
+			}
+			const CString formFactor = FormFactorText(row[10]);
+			if (HasValue(formFactor))
+			{
+				line += _T(" ");
+				line += formFactor;
+			}
+			if (HasValue(row[1]))
+			{
+				line += _T(" | 标称 ");
+				line += row[1];
+				line += _T(" MHz");
+			}
+			if (HasValue(row[2]))
+			{
+				line += _T(" / 配置 ");
+				line += row[2];
+				line += _T(" MHz");
+			}
+			const CString manufacturer = MemoryManufacturerText(row[3]);
+			if (HasValue(manufacturer))
+			{
+				line += _T(" | ");
+				line += manufacturer;
+			}
+			if (HasValue(row[4]))
+			{
+				line += _T(" | PN ");
+				line += row[4];
+			}
+			if (HasValue(row[5]))
+			{
+				line += _T(" | SN ");
+				line += row[5];
+			}
+			if (HasValue(row[7]))
+			{
+				line += _T(" | ");
+				line += row[7];
+			}
+			lines.push_back(line);
+		}
+		return lines;
+	}
+
 	// 解析磁盘型号、容量与接口类型，生成可读摘要。
 	CString ResolveDiskInfo()
 	{
@@ -2824,6 +3129,113 @@ namespace
 		quoted.Format(_T("\"%s\""), trimmed.GetString());
 		return quoted;
 	}
+
+	CString CpuidVendor()
+	{
+		int cpuInfo[4] = {};
+		__cpuid(cpuInfo, 0);
+		char vendor[13] = {};
+		memcpy(vendor + 0, &cpuInfo[1], 4);
+		memcpy(vendor + 4, &cpuInfo[3], 4);
+		memcpy(vendor + 8, &cpuInfo[2], 4);
+		return CString(vendor);
+	}
+
+	CString CpuidBrandString()
+	{
+		int cpuInfo[4] = {};
+		__cpuid(cpuInfo, 0x80000000);
+		const unsigned int maxExtended = static_cast<unsigned int>(cpuInfo[0]);
+		if (maxExtended < 0x80000004)
+		{
+			return _T("");
+		}
+
+		int brandRegs[12] = {};
+		__cpuid(brandRegs + 0, 0x80000002);
+		__cpuid(brandRegs + 4, 0x80000003);
+		__cpuid(brandRegs + 8, 0x80000004);
+		char brand[49] = {};
+		memcpy(brand, brandRegs, 48);
+		return Trimmed(CString(brand));
+	}
+
+	CString CpuidSignatureText()
+	{
+		int cpuInfo[4] = {};
+		__cpuid(cpuInfo, 1);
+		const unsigned int eax = static_cast<unsigned int>(cpuInfo[0]);
+		const unsigned int stepping = eax & 0xF;
+		const unsigned int baseModel = (eax >> 4) & 0xF;
+		const unsigned int baseFamily = (eax >> 8) & 0xF;
+		const unsigned int processorType = (eax >> 12) & 0x3;
+		const unsigned int extModel = (eax >> 16) & 0xF;
+		const unsigned int extFamily = (eax >> 20) & 0xFF;
+		const unsigned int family = baseFamily == 0xF ? baseFamily + extFamily : baseFamily;
+		const unsigned int model = (baseFamily == 0x6 || baseFamily == 0xF) ? (extModel << 4) + baseModel : baseModel;
+
+		CString text;
+		text.Format(_T("0x%08X / Family %u, Model %u, Stepping %u, Type %u"),
+			eax, family, model, stepping, processorType);
+		return text;
+	}
+
+	CString CpuidFeatureText()
+	{
+		int cpuInfo[4] = {};
+		__cpuid(cpuInfo, 1);
+		const unsigned int ecx = static_cast<unsigned int>(cpuInfo[2]);
+		const unsigned int edx = static_cast<unsigned int>(cpuInfo[3]);
+
+		std::vector<CString> flags;
+		auto addFlag = [&flags](bool hasFlag, const CString& name)
+		{
+			if (hasFlag)
+			{
+				flags.push_back(name);
+			}
+		};
+
+		addFlag((edx & (1u << 23)) != 0, _T("MMX"));
+		addFlag((edx & (1u << 25)) != 0, _T("SSE"));
+		addFlag((edx & (1u << 26)) != 0, _T("SSE2"));
+		addFlag((ecx & (1u << 0)) != 0, _T("SSE3"));
+		addFlag((ecx & (1u << 9)) != 0, _T("SSSE3"));
+		addFlag((ecx & (1u << 19)) != 0, _T("SSE4.1"));
+		addFlag((ecx & (1u << 20)) != 0, _T("SSE4.2"));
+		addFlag((ecx & (1u << 22)) != 0, _T("MOVBE"));
+		addFlag((ecx & (1u << 23)) != 0, _T("POPCNT"));
+		addFlag((ecx & (1u << 25)) != 0, _T("AES"));
+		addFlag((ecx & (1u << 28)) != 0, _T("AVX"));
+		addFlag((ecx & (1u << 12)) != 0, _T("FMA"));
+		addFlag((ecx & (1u << 30)) != 0, _T("RDRAND"));
+
+		__cpuid(cpuInfo, 0);
+		const unsigned int maxLeaf = static_cast<unsigned int>(cpuInfo[0]);
+		if (maxLeaf >= 7)
+		{
+			int leaf7[4] = {};
+			__cpuidex(leaf7, 7, 0);
+			const unsigned int ebx = static_cast<unsigned int>(leaf7[1]);
+			addFlag((ebx & (1u << 3)) != 0, _T("BMI1"));
+			addFlag((ebx & (1u << 5)) != 0, _T("AVX2"));
+			addFlag((ebx & (1u << 8)) != 0, _T("BMI2"));
+			addFlag((ebx & (1u << 18)) != 0, _T("RDSEED"));
+			addFlag((ebx & (1u << 19)) != 0, _T("ADX"));
+			addFlag((ebx & (1u << 29)) != 0, _T("SHA"));
+		}
+
+		CString text;
+		for (size_t i = 0; i < flags.size(); ++i)
+		{
+			if (i > 0)
+			{
+				text += _T(", ");
+			}
+			text += flags[i];
+		}
+		return text;
+	}
 }
 
 // 用于应用程序“关于”菜单项的 CAboutDlg 对话框
@@ -3032,6 +3444,15 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 			Invalidate();
 		}
 	}
+	else if (m_acpiMenuRect.PtInRect(point))
+	{
+		if (m_activePage != PAGE_ACPI_INFO)
+		{
+			m_activePage = PAGE_ACPI_INFO;
+			UpdatePageVisibility();
+			Invalidate();
+		}
+	}
 	else if (m_ssdMenuRect.PtInRect(point))
 	{
 		if (m_activePage != PAGE_SSD_INFO)
@@ -3083,6 +3504,7 @@ void CMFCApplication1Dlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 {
 	if (m_activePage != PAGE_SYSTEM_INFO &&
 		m_activePage != PAGE_SYSTEM_STATUS &&
+		m_activePage != PAGE_ACPI_INFO &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
 		m_activePage != PAGE_SCREEN_INFO)
@@ -3152,6 +3574,7 @@ BOOL CMFCApplication1Dlg::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
 {
 	if (m_activePage != PAGE_SYSTEM_INFO &&
 		m_activePage != PAGE_SYSTEM_STATUS &&
+		m_activePage != PAGE_ACPI_INFO &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
 		m_activePage != PAGE_SCREEN_INFO)
@@ -3283,6 +3706,7 @@ LRESULT CMFCApplication1Dlg::OnApplyLoadedSystemInformation(WPARAM wParam, LPARA
 
 	m_systemRows = result->systemRows;
 	m_systemStatusRows = result->systemStatusRows;
+	m_acpiRows = result->acpiRows;
 	m_loading = false;
 	if (m_activePage == PAGE_SYSTEM_INFO)
 	{
@@ -3356,6 +3780,7 @@ UINT CMFCApplication1Dlg::LoadSystemInformationThread(LPVOID parameter)
 	AsyncLoadResult* result = new AsyncLoadResult;
 	result->systemRows = loader.m_systemRows;
 	result->systemStatusRows = loader.m_systemStatusRows;
+	result->acpiRows = loader.m_acpiRows;
 	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_SYSTEM_INFO, result);
 	return 0;
 }
@@ -3409,7 +3834,7 @@ bool CMFCApplication1Dlg::ExportReportToFile(const CString& reportType, const CS
 	{
 		LoadSystemInformation(true);
 	}
-	else if (type == _T("SYSTEM") || type == _T("STATUS"))
+	else if (type == _T("SYSTEM") || type == _T("STATUS") || type == _T("ACPI"))
 	{
 		LoadSystemInformation(false);
 	}
@@ -3419,7 +3844,7 @@ bool CMFCApplication1Dlg::ExportReportToFile(const CString& reportType, const CS
 	}
 	else
 	{
-		errorMessage = _T("不支持的报告类型。仅支持：SSD、SYSTEM、STATUS、EDID。");
+		errorMessage = _T("不支持的报告类型。仅支持：SSD、SYSTEM、STATUS、ACPI、EDID。");
 		return false;
 	}
 
@@ -3467,6 +3892,16 @@ bool CMFCApplication1Dlg::ExportReportToFile(const CString& reportType, const CS
 	else if (type == _T("STATUS"))
 	{
 		for (const auto& row : m_systemStatusRows)
+		{
+			reportText += row.item;
+			reportText += _T(": ");
+			reportText += row.value;
+			reportText += _T("\r\n");
+		}
+	}
+	else if (type == _T("ACPI"))
+	{
+		for (const auto& row : m_acpiRows)
 		{
 			reportText += row.item;
 			reportText += _T(": ");
@@ -3546,6 +3981,7 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	const bool hasWindow = ::IsWindow(GetSafeHwnd());
 	m_systemRows.clear();
 	m_systemStatusRows.clear();
+	m_acpiRows.clear();
 	m_ssdRows.clear();
 	m_ssdDiskRows.clear();
 	m_ssdTabTitles.clear();
@@ -3578,6 +4014,8 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 		}
 	}
 	const CString memoryInfo = ResolveMemoryInfo();
+	const CString gpuDetails = ResolveGpuDetails();
+	const std::vector<CString> memoryDetailLines = ResolveMemoryDetailLines();
 	const CString ssdInfo = ResolveDiskInfo();
 	const CString biosVersion = FirstValue(_T("ROOT\\CIMV2"), _T("SELECT SMBIOSBIOSVersion FROM Win32_BIOS"), _T("SMBIOSBIOSVersion"));
 	const CString ecVersion = ResolveEcVersion();
@@ -3647,6 +4085,86 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	addSystemStatusRow(_T("Windows目录"), osRow.size() > 6 ? osRow[6] : _T(""));
 	addSystemStatusRow(_T("Secure Boot"), ResolveSecureBootStatus());
 	addSystemStatusRow(_T("BitLocker"), ResolveBitLockerStatus());
+
+	auto addAcpiRow = [this](const CString& item, const CString& value)
+		{
+			m_acpiRows.push_back({ item, HasValue(value) ? NormalizeMultilineValue(value) : _T("N/A") });
+		};
+	const auto cpuRows = QueryWmiRows(
+		_T("ROOT\\CIMV2"),
+		_T("SELECT Manufacturer, Name, SocketDesignation, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, CurrentClockSpeed, ProcessorId, Revision, L2CacheSize, L3CacheSize, VirtualizationFirmwareEnabled, SecondLevelAddressTranslationExtensions, VMMonitorModeExtensions FROM Win32_Processor"),
+		{ _T("Manufacturer"), _T("Name"), _T("SocketDesignation"), _T("NumberOfCores"), _T("NumberOfLogicalProcessors"), _T("MaxClockSpeed"), _T("CurrentClockSpeed"), _T("ProcessorId"), _T("Revision"), _T("L2CacheSize"), _T("L3CacheSize"), _T("VirtualizationFirmwareEnabled"), _T("SecondLevelAddressTranslationExtensions"), _T("VMMonitorModeExtensions") });
+	const std::vector<CString> cpuRow = cpuRows.empty() ? std::vector<CString>() : cpuRows.front();
+	const auto biosRows = QueryWmiRows(
+		_T("ROOT\\CIMV2"),
+		_T("SELECT Manufacturer, SMBIOSBIOSVersion, Version, ReleaseDate, SerialNumber FROM Win32_BIOS"),
+		{ _T("Manufacturer"), _T("SMBIOSBIOSVersion"), _T("Version"), _T("ReleaseDate"), _T("SerialNumber") });
+	const std::vector<CString> biosRow = biosRows.empty() ? std::vector<CString>() : biosRows.front();
+	const auto boardRows = QueryWmiRows(
+		_T("ROOT\\CIMV2"),
+		_T("SELECT Manufacturer, Product, Version, SerialNumber FROM Win32_BaseBoard"),
+		{ _T("Manufacturer"), _T("Product"), _T("Version"), _T("SerialNumber") });
+	const std::vector<CString> boardRow = boardRows.empty() ? std::vector<CString>() : boardRows.front();
+	const auto productRows = QueryWmiRows(
+		_T("ROOT\\CIMV2"),
+		_T("SELECT Vendor, Name, Version, UUID FROM Win32_ComputerSystemProduct"),
+		{ _T("Vendor"), _T("Name"), _T("Version"), _T("UUID") });
+	const std::vector<CString> productRow = productRows.empty() ? std::vector<CString>() : productRows.front();
+	const auto enclosureRows = QueryWmiRows(
+		_T("ROOT\\CIMV2"),
+		_T("SELECT Manufacturer, ChassisTypes, SMBIOSAssetTag FROM Win32_SystemEnclosure"),
+		{ _T("Manufacturer"), _T("ChassisTypes"), _T("SMBIOSAssetTag") });
+	const std::vector<CString> enclosureRow = enclosureRows.empty() ? std::vector<CString>() : enclosureRows.front();
+
+	addAcpiRow(_T("CPU制造商"), HasValue(CpuidVendor()) ? CpuidVendor() : (cpuRow.size() > 0 ? cpuRow[0] : _T("")));
+	addAcpiRow(_T("CPU名称"), HasValue(CpuidBrandString()) ? CpuidBrandString() : (cpuRow.size() > 1 ? cpuRow[1] : _T("")));
+	addAcpiRow(_T("CPU插槽"), cpuRow.size() > 2 ? cpuRow[2] : _T(""));
+	addAcpiRow(_T("核心/线程"), [&cpuRow]() {
+		CString text;
+		text.Format(_T("%s / %s"),
+			cpuRow.size() > 3 ? cpuRow[3].GetString() : _T("N/A"),
+			cpuRow.size() > 4 ? cpuRow[4].GetString() : _T("N/A"));
+		return text;
+		}());
+	addAcpiRow(_T("最大频率"), cpuRow.size() > 5 && HasValue(cpuRow[5]) ? cpuRow[5] + _T(" MHz") : _T(""));
+	addAcpiRow(_T("Processor ID"), cpuRow.size() > 7 ? cpuRow[7] : _T(""));
+	addAcpiRow(_T("WMI修订版本"), cpuRow.size() > 8 ? cpuRow[8] : _T(""));
+	addAcpiRow(_T("CPUID签名"), CpuidSignatureText());
+	addAcpiRow(_T("虚拟化支持"), cpuRow.size() > 11 ? cpuRow[11] : _T(""));
+	addAcpiRow(_T("SLAT支持"), cpuRow.size() > 12 ? cpuRow[12] : _T(""));
+	addAcpiRow(_T("VM Monitor扩展"), cpuRow.size() > 13 ? cpuRow[13] : _T(""));
+	addAcpiRow(_T("CPU指令集"), CpuidFeatureText());
+	addAcpiRow(_T("GPU信息"), HasValue(gpuDetails) ? gpuDetails : gpuModel);
+	if (!memoryDetailLines.empty())
+	{
+		addAcpiRow(_T("内存总览"), memoryDetailLines.front());
+		for (size_t i = 1; i < memoryDetailLines.size(); ++i)
+		{
+			CString label;
+			label.Format(_T("内存[%u]"), static_cast<unsigned>(i));
+			addAcpiRow(label, memoryDetailLines[i]);
+		}
+	}
+	else
+	{
+		addAcpiRow(_T("内存信息"), memoryInfo);
+	}
+	addAcpiRow(_T("BIOS厂商"), biosRow.size() > 0 ? biosRow[0] : _T(""));
+	addAcpiRow(_T("SMBIOS版本"), biosRow.size() > 1 ? biosRow[1] : _T(""));
+	addAcpiRow(_T("BIOS版本"), biosRow.size() > 2 ? biosRow[2] : _T(""));
+	addAcpiRow(_T("BIOS发布日期"), biosRow.size() > 3 ? FormatWmiDateTime(biosRow[3]) : _T(""));
+	addAcpiRow(_T("BIOS序列号"), biosRow.size() > 4 ? biosRow[4] : _T(""));
+	addAcpiRow(_T("主板厂商"), boardRow.size() > 0 ? boardRow[0] : _T(""));
+	addAcpiRow(_T("主板产品"), boardRow.size() > 1 ? boardRow[1] : _T(""));
+	addAcpiRow(_T("主板版本"), boardRow.size() > 2 ? boardRow[2] : _T(""));
+	addAcpiRow(_T("主板序列号"), boardRow.size() > 3 ? boardRow[3] : _T(""));
+	addAcpiRow(_T("系统产品厂商"), productRow.size() > 0 ? productRow[0] : _T(""));
+	addAcpiRow(_T("系统产品名称"), productRow.size() > 1 ? productRow[1] : _T(""));
+	addAcpiRow(_T("系统产品版本"), productRow.size() > 2 ? productRow[2] : _T(""));
+	addAcpiRow(_T("系统UUID"), productRow.size() > 3 ? productRow[3] : _T(""));
+	addAcpiRow(_T("机箱厂商"), enclosureRow.size() > 0 ? enclosureRow[0] : _T(""));
+	addAcpiRow(_T("机箱类型"), enclosureRow.size() > 1 ? enclosureRow[1] : _T(""));
+	addAcpiRow(_T("资产标签"), enclosureRow.size() > 2 ? enclosureRow[2] : _T(""));
 
 	// 启动时先加载基础信息，SSD 重采集延后到用户进入 SSD 页再执行，避免首屏卡顿感。
 	if (!loadSsdDetails)
@@ -4187,6 +4705,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	DrawRoundedCard(memDc, m_infoMenuRect, m_activePage == PAGE_SYSTEM_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_statusMenuRect, m_activePage == PAGE_SYSTEM_STATUS ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_startupMenuRect, m_activePage == PAGE_STARTUP_ITEMS ? selectedColor : unselectedColor, 10);
+	DrawRoundedCard(memDc, m_acpiMenuRect, m_activePage == PAGE_ACPI_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_settingsMenuRect, m_activePage == PAGE_SYSTEM_SETTINGS ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_ssdMenuRect, m_activePage == PAGE_SSD_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_screenMenuRect, m_activePage == PAGE_SCREEN_INFO ? selectedColor : unselectedColor, 10);
@@ -4194,6 +4713,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	if (m_activePage == PAGE_SYSTEM_INFO) DrawAccentStrip(memDc, m_infoMenuRect, UiAccent);
 	if (m_activePage == PAGE_SYSTEM_STATUS) DrawAccentStrip(memDc, m_statusMenuRect, UiAccent);
 	if (m_activePage == PAGE_STARTUP_ITEMS) DrawAccentStrip(memDc, m_startupMenuRect, UiAccent);
+	if (m_activePage == PAGE_ACPI_INFO) DrawAccentStrip(memDc, m_acpiMenuRect, UiAccent);
 	if (m_activePage == PAGE_SYSTEM_SETTINGS) DrawAccentStrip(memDc, m_settingsMenuRect, UiAccent);
 	if (m_activePage == PAGE_SSD_INFO) DrawAccentStrip(memDc, m_ssdMenuRect, UiAccent);
 	if (m_activePage == PAGE_SCREEN_INFO) DrawAccentStrip(memDc, m_screenMenuRect, UiAccent);
@@ -4219,6 +4739,11 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	menuTextRect.right -= 12;
 	memDc.SetTextColor(m_activePage == PAGE_STARTUP_ITEMS ? UiText : UiSecondaryText);
 	memDc.DrawText(_T("启动项"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_acpiMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_ACPI_INFO ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("硬件详情"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 	menuTextRect = m_settingsMenuRect;
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
@@ -4246,6 +4771,10 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	else if (m_activePage == PAGE_STARTUP_ITEMS)
 	{
 		DrawStartupItems(memDc, clientRect);
+	}
+	else if (m_activePage == PAGE_ACPI_INFO)
+	{
+		DrawAcpiInformation(memDc, clientRect);
 	}
 	else if (m_activePage == PAGE_SSD_INFO)
 	{
@@ -4659,6 +5188,104 @@ void CMFCApplication1Dlg::DrawStartupItems(CDC& dc, const CRect& clientRect)
 	UpdateVerticalScrollBar(max(1, m_contentRect.Height()), max(1, m_contentRect.Height()));
 }
 
+void CMFCApplication1Dlg::DrawAcpiInformation(CDC& dc, const CRect& clientRect)
+{
+	UNREFERENCED_PARAMETER(clientRect);
+
+	CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
+	CRect listRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
+	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
+	DrawRoundedCard(dc, listRect, UiSurface, 12, UiBorder);
+
+	dc.SelectObject(&m_titleFont);
+	dc.SetTextColor(UiText);
+	CRect titleRect(headerRect.left + 18, headerRect.top + 10, headerRect.right - 16, headerRect.top + 42);
+	dc.DrawText(_T("硬件详情"), titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+	dc.SelectObject(&m_subtitleFont);
+	dc.SetTextColor(UiSecondaryText);
+	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 16, headerRect.bottom - 8);
+	dc.DrawText(_T("查看 CPU、CPUID、BIOS/SMBIOS、主板、机箱和系统产品信息"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+	const int labelX = listRect.left + 16;
+	const int labelWidth = 178;
+	const int valueX = labelX + labelWidth + 34;
+	const int contentTop = listRect.top + 14;
+	const int contentBottom = listRect.bottom - 12;
+	const int contentWidth = (listRect.right - 16) - valueX;
+	const int valueRight = valueX + contentWidth;
+
+	TEXTMETRIC labelTm = {};
+	dc.SelectObject(&m_labelFont);
+	dc.GetTextMetrics(&labelTm);
+	const int labelLineHeight = max(static_cast<int>(labelTm.tmHeight + labelTm.tmExternalLeading), 24);
+
+	TEXTMETRIC valueTm = {};
+	dc.SelectObject(&m_valueFont);
+	dc.GetTextMetrics(&valueTm);
+	const int valueLineHeight = max(static_cast<int>(valueTm.tmHeight + valueTm.tmExternalLeading), 24);
+	const int rowPadding = 8;
+	const int rowGap = 10;
+
+	std::vector<int> rowHeights;
+	rowHeights.reserve(m_acpiRows.size());
+	int totalHeight = 14;
+	for (const InfoRow& row : m_acpiRows)
+	{
+		CRect calcRect(0, 0, max(contentWidth, 80), 0);
+		dc.SelectObject(&m_valueFont);
+		dc.DrawText(row.value, calcRect, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+		const int valueHeight = max(valueLineHeight, calcRect.Height());
+		const int rowHeight = max(labelLineHeight, valueHeight) + rowPadding;
+		rowHeights.push_back(rowHeight);
+		totalHeight += rowHeight + rowGap;
+	}
+	totalHeight += 10;
+	UpdateVerticalScrollBar(totalHeight, max(1, listRect.Height() - 4));
+
+	int y = contentTop - m_scrollPos;
+	const int oldDc = dc.SaveDC();
+	dc.IntersectClipRect(listRect.left + 6, listRect.top + 6, listRect.right - 6, listRect.bottom - 6);
+
+	if (m_acpiRows.empty())
+	{
+		dc.SelectObject(&m_valueFont);
+		dc.SetTextColor(UiSecondaryText);
+		dc.TextOutW(labelX, y, _T("正在加载硬件详情，请稍候..."));
+	}
+	else
+	{
+		for (size_t i = 0; i < m_acpiRows.size(); ++i)
+		{
+			const InfoRow& row = m_acpiRows[i];
+			const int rowHeight = i < rowHeights.size() ? rowHeights[i] : (labelLineHeight + rowPadding);
+			dc.SelectObject(&m_labelFont);
+			dc.SetTextColor(UiTertiaryText);
+			CRect labelRect(labelX, y, labelX + labelWidth, y + rowHeight);
+			dc.DrawText(row.item, labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+			dc.SelectObject(&m_valueFont);
+			dc.SetTextColor(UiText);
+			CRect valueRect(valueX, y + 1, valueRight, y + rowHeight);
+			dc.DrawText(row.value, valueRect, DT_LEFT | DT_WORDBREAK);
+
+			CPen linePen(PS_SOLID, 1, UiBorder);
+			CPen* oldLinePen = dc.SelectObject(&linePen);
+			const int separatorY = y + rowHeight + (rowGap / 2);
+			dc.MoveTo(labelX, separatorY);
+			dc.LineTo(valueRight, separatorY);
+			dc.SelectObject(oldLinePen);
+
+			y += rowHeight + rowGap;
+			if (y > contentBottom + 20)
+			{
+				break;
+			}
+		}
+	}
+	dc.RestoreDC(oldDc);
+}
+
 // 绘制系统设置页背景卡片与分组标题。
 void CMFCApplication1Dlg::DrawSystemSettings(CDC& dc, const CRect& clientRect)
 {
@@ -4791,7 +5418,8 @@ void CMFCApplication1Dlg::RecalcLayoutRects(const CRect& clientRect)
 	m_infoMenuRect = CRect(m_sideRect.left + 10, m_sideRect.top + 54, m_sideRect.right - 10, m_sideRect.top + 102);
 	m_statusMenuRect = CRect(m_sideRect.left + 10, m_infoMenuRect.bottom + 10, m_sideRect.right - 10, m_infoMenuRect.bottom + 62);
 	m_startupMenuRect = CRect(m_sideRect.left + 10, m_statusMenuRect.bottom + 10, m_sideRect.right - 10, m_statusMenuRect.bottom + 62);
-	m_ssdMenuRect = CRect(m_sideRect.left + 10, m_startupMenuRect.bottom + 10, m_sideRect.right - 10, m_startupMenuRect.bottom + 62);
+	m_acpiMenuRect = CRect(m_sideRect.left + 10, m_startupMenuRect.bottom + 10, m_sideRect.right - 10, m_startupMenuRect.bottom + 62);
+	m_ssdMenuRect = CRect(m_sideRect.left + 10, m_acpiMenuRect.bottom + 10, m_sideRect.right - 10, m_acpiMenuRect.bottom + 62);
 	m_screenMenuRect = CRect(m_sideRect.left + 10, m_ssdMenuRect.bottom + 10, m_sideRect.right - 10, m_ssdMenuRect.bottom + 62);
 	m_settingsMenuRect = CRect(m_sideRect.left + 10, m_screenMenuRect.bottom + 10, m_sideRect.right - 10, m_screenMenuRect.bottom + 62);
 }
@@ -5448,6 +6076,7 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	const bool showScreen = (m_activePage == PAGE_SCREEN_INFO);
 	const bool showStatus = (m_activePage == PAGE_SYSTEM_STATUS);
 	const bool showStartup = (m_activePage == PAGE_STARTUP_ITEMS);
+	const bool showAcpi = (m_activePage == PAGE_ACPI_INFO);
 	const int startupCmd = showStartup ? SW_SHOW : SW_HIDE;
 	for (CButton* checkBox : GetOptionCheckBoxes())
 	{
@@ -5511,6 +6140,10 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 		m_scrollPos = 0;
 		UpdateStartupControlLayout();
 		UpdateStartupButtons();
+	}
+	else if (showAcpi)
+	{
+		m_scrollPos = 0;
 	}
 }
 

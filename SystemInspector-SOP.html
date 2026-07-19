@@ -248,6 +248,11 @@
         </article>
 
         <article class="module">
+          <h3>硬件详情</h3>
+          <p>查看 CPU 制造商、名称、核心/线程、频率、CPUID 签名、虚拟化、指令集，GPU 显存/驱动/显示模式，以及 BIOS/SMBIOS、主板、机箱和系统产品信息。内存信息按每根 DIMM 独立显示，包含插槽、容量、类型、频率、厂商、Part Number 和序列号。</p>
+        </article>
+
+        <article class="module">
           <h3>屏幕详情</h3>
           <p>读取当前活动显示器的 EDID 信息，展示显示器名称、显示器 ID、EDID 日期、版本、序列号、刷新率、校验和以及 EDID 原始十六进制数据。</p>
         </article>
@@ -264,6 +269,7 @@
       <p>程序支持通过 <code>-Report</code> 参数导出文本报告，适合批量检测或留档。</p>
       <pre><code>SystemInspector.exe -Report SYSTEM "D:\Temp\system-report.txt"
 SystemInspector.exe -Report STATUS "D:\Temp\status-report.txt"
+SystemInspector.exe -Report ACPI "D:\Temp\acpi-report.txt"
 SystemInspector.exe -Report SSD "D:\Temp\ssd-report.txt"
 SystemInspector.exe -Report EDID "D:\Temp\edid-report.txt"</code></pre>
 
@@ -282,6 +288,10 @@ SystemInspector.exe -Report EDID "D:\Temp\edid-report.txt"</code></pre>
           <tr>
             <td><code>STATUS</code></td>
             <td>Windows 版本、激活状态和安全状态。</td>
+          </tr>
+          <tr>
+            <td><code>ACPI</code></td>
+            <td>CPU、GPU、逐条内存、BIOS/SMBIOS、主板、机箱和系统产品信息。</td>
           </tr>
           <tr>
             <td><code>SSD</code></td>
