@@ -9,6 +9,7 @@
 #include "AtaSmartCore\CompileOptions.h"
 #include "AtaSmartCore\AtaSmart.h"
 #include "AtaSmartCore\Priscilla\UtilityFx.h"
+#include "AtaSmartCore\SlotSpeedGetter.h"
 
 #include <Wbemidl.h>
 #include <comdef.h>
@@ -16,6 +17,8 @@
 #include <atlstr.h>
 #include <winioctl.h>
 #include <Shlwapi.h>
+#include <dwmapi.h>
+#include <uxtheme.h>
 #include <cwctype>
 #include <cmath>
 #include <map>
@@ -24,6 +27,24 @@
 
 #pragma comment(lib, "wbemuuid.lib")
 #pragma comment(lib, "Shlwapi.lib")
+#pragma comment(lib, "Dwmapi.lib")
+#pragma comment(lib, "UxTheme.lib")
+
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif
+
+#ifndef DWMWCP_ROUND
+#define DWMWCP_ROUND 2
+#endif
+
+#ifndef DWMSBT_MAINWINDOW
+#define DWMSBT_MAINWINDOW 2
+#endif
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -35,6 +56,9 @@ namespace
 	constexpr UINT WM_APP_LOAD_SYSTEM_INFO = WM_APP + 100;
 	constexpr UINT WM_APP_LOAD_SSD_INFO = WM_APP + 101;
 	constexpr UINT WM_APP_LOAD_SCREEN_INFO = WM_APP + 102;
+	constexpr UINT WM_APP_APPLY_SYSTEM_INFO = WM_APP + 103;
+	constexpr UINT WM_APP_APPLY_SSD_INFO = WM_APP + 104;
+	constexpr UINT WM_APP_APPLY_SCREEN_INFO = WM_APP + 105;
 	constexpr int PAGE_SYSTEM_INFO = 0;
 	constexpr int PAGE_SYSTEM_SETTINGS = 1;
 	constexpr int PAGE_SSD_INFO = 2;
@@ -55,11 +79,63 @@ namespace
 	constexpr UINT IDC_SSD_TAB = 3015;
 	constexpr UINT IDC_OPTIONS_START = IDC_CHK_UAC;
 	constexpr UINT IDC_OPTIONS_END = IDC_CHK_WINDOWS_UPDATE;
+	const COLORREF UiBackground = RGB(243, 243, 243);
+	const COLORREF UiSurface = RGB(255, 255, 255);
+	const COLORREF UiSurfaceAlt = RGB(249, 249, 249);
+	const COLORREF UiSubtleSurface = RGB(247, 249, 252);
+	const COLORREF UiBorder = RGB(229, 229, 229);
+	const COLORREF UiText = RGB(32, 32, 32);
+	const COLORREF UiSecondaryText = RGB(96, 96, 96);
+	const COLORREF UiTertiaryText = RGB(115, 115, 115);
+	const COLORREF UiAccent = RGB(0, 95, 184);
+	const COLORREF UiAccentSoft = RGB(232, 241, 251);
+	const COLORREF UiWarningText = RGB(156, 86, 38);
 
 	bool EnsureComInitialized();
 	CString VariantToCString(VARIANT& var);
 	bool RunProcessCaptureOutput(const CString& executablePath, CString& output);
 	CString JoinUniqueValues(const std::set<CString, std::less<>>& values, const CString& separator);
+	int ExtractPhysicalDriveId(const CString& devicePath);
+
+	void EnableWin11Chrome(HWND hwnd)
+	{
+		const DWORD cornerPreference = DWMWCP_ROUND;
+		DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPreference, sizeof(cornerPreference));
+
+		const DWORD backdropType = DWMSBT_MAINWINDOW;
+		DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
+	}
+
+	void CenterWindowAtTwoThirdsOfScreen(CWnd& window)
+	{
+		HMONITOR monitor = MonitorFromWindow(window.GetSafeHwnd(), MONITOR_DEFAULTTONEAREST);
+		MONITORINFO monitorInfo = {};
+		monitorInfo.cbSize = sizeof(monitorInfo);
+		if (!GetMonitorInfo(monitor, &monitorInfo))
+		{
+			window.CenterWindow();
+			return;
+		}
+
+		const CRect workArea(monitorInfo.rcWork);
+		const int windowWidth = max(640, workArea.Width() * 2 / 3);
+		const int windowHeight = max(480, workArea.Height() * 2 / 3);
+		const int left = workArea.left + (workArea.Width() - windowWidth) / 2;
+		const int top = workArea.top + (workArea.Height() - windowHeight) / 2;
+		window.SetWindowPos(nullptr, left, top, windowWidth, windowHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+	}
+
+	void DrawAccentStrip(CDC& dc, const CRect& rect, COLORREF color)
+	{
+		CRect strip(rect.left + 10, rect.top + 13, rect.left + 14, rect.bottom - 13);
+		CBrush brush(color);
+		CPen pen(PS_SOLID, 1, color);
+		CBrush* oldBrush = dc.SelectObject(&brush);
+		CPen* oldPen = dc.SelectObject(&pen);
+		dc.RoundRect(strip, CPoint(4, 4));
+		dc.SelectObject(oldPen);
+		dc.SelectObject(oldBrush);
+	}
 
 	// 去除字符串首尾空白字符，返回规整后的结果。
 	CString Trimmed(const CString& value)
@@ -74,6 +150,31 @@ namespace
 	{
 		const CString trimmed = Trimmed(value);
 		return !trimmed.IsEmpty() && trimmed.CompareNoCase(_T("N/A")) != 0;
+	}
+
+	bool IsPlaceholderValue(const CString& value)
+	{
+		const CString trimmed = Trimmed(value);
+		if (!HasValue(trimmed))
+		{
+			return true;
+		}
+
+		bool hasOnlyDashes = true;
+		for (int i = 0; i < trimmed.GetLength(); ++i)
+		{
+			if (trimmed[i] != _T('-'))
+			{
+				hasOnlyDashes = false;
+				break;
+			}
+		}
+		return hasOnlyDashes;
+	}
+
+	bool HasDisplayValue(const CString& value)
+	{
+		return !IsPlaceholderValue(value);
 	}
 
 	// 将字符串转换为小写，便于做不区分大小写的关键字匹配。
@@ -552,6 +653,109 @@ namespace
 		return normalized;
 	}
 
+	bool IsLikelySameDisk(const CAtaSmart::ATA_SMART_INFO& info, const std::vector<CString>& diskRow)
+	{
+		if (diskRow.size() < 9)
+		{
+			return false;
+		}
+
+		const int rowPhysicalDriveId = ExtractPhysicalDriveId(diskRow[8]);
+		if (info.PhysicalDriveId >= 0 && rowPhysicalDriveId == info.PhysicalDriveId)
+		{
+			return true;
+		}
+
+		const CString infoModel = NormalizeHardwareKey(info.Model);
+		const CString rowModel = NormalizeHardwareKey(diskRow[0]);
+		const CString infoSerial = NormalizeHardwareKey(info.SerialNumber);
+		const CString rowSerial = NormalizeHardwareKey(diskRow[4]);
+		const bool modelMatched =
+			!infoModel.IsEmpty() &&
+			(rowModel.Find(infoModel) >= 0 || infoModel.Find(rowModel) >= 0);
+		const bool serialMatched =
+			!infoSerial.IsEmpty() &&
+			(rowSerial.Find(infoSerial) >= 0 || infoSerial.Find(rowSerial) >= 0);
+		return serialMatched || (modelMatched && info.NumberOfSectors > 0);
+	}
+
+	CString ResolveAtaSmartDeviceId(
+		const CAtaSmart::ATA_SMART_INFO& info,
+		const std::vector<std::vector<CString>>& diskRows,
+		const std::map<int, CString>& pnpByPhysicalDriveId)
+	{
+		if (HasDisplayValue(info.PnpDeviceId))
+		{
+			return info.PnpDeviceId;
+		}
+
+		const auto byDriveId = pnpByPhysicalDriveId.find(info.PhysicalDriveId);
+		if (byDriveId != pnpByPhysicalDriveId.end() && HasDisplayValue(byDriveId->second))
+		{
+			return byDriveId->second;
+		}
+
+		for (const auto& diskRow : diskRows)
+		{
+			if (!IsLikelySameDisk(info, diskRow))
+			{
+				continue;
+			}
+			if (diskRow.size() > 7 && HasDisplayValue(diskRow[7]))
+			{
+				return diskRow[7];
+			}
+			if (diskRow.size() > 8 && HasDisplayValue(diskRow[8]))
+			{
+				return diskRow[8];
+			}
+		}
+
+		if (info.PhysicalDriveId >= 0)
+		{
+			CString devicePath;
+			devicePath.Format(_T("\\\\.\\PhysicalDrive%d"), info.PhysicalDriveId);
+			return devicePath;
+		}
+		return _T("N/A");
+	}
+
+	void FillNvmeTransferModeFallback(const CAtaSmart::ATA_SMART_INFO& info, CString& transferMode, CString& maxTransferMode)
+	{
+		const CString interfaceLower = ToLower(info.Interface);
+		const bool isNvme = info.IsNVMe ||
+			interfaceLower.Find(_T("nvm express")) >= 0 ||
+			interfaceLower.Find(_T("nvme")) >= 0;
+		if (!isNvme)
+		{
+			return;
+		}
+
+		if (info.PhysicalDriveId >= 0 && (!HasDisplayValue(transferMode) || !HasDisplayValue(maxTransferMode)))
+		{
+			const SlotMaxCurrSpeed slotSpeed = GetPCIeSlotSpeed(info.PhysicalDriveId, TRUE);
+			const CString currentSlotSpeed = SlotSpeedToString(slotSpeed.Current);
+			const CString maxSlotSpeed = SlotSpeedToString(slotSpeed.Maximum);
+			if (!HasDisplayValue(transferMode) && HasDisplayValue(currentSlotSpeed))
+			{
+				transferMode = currentSlotSpeed;
+			}
+			if (!HasDisplayValue(maxTransferMode) && HasDisplayValue(maxSlotSpeed))
+			{
+				maxTransferMode = maxSlotSpeed;
+			}
+		}
+
+		if (!HasDisplayValue(transferMode))
+		{
+			transferMode = _T("PCIe/NVMe");
+		}
+		if (!HasDisplayValue(maxTransferMode))
+		{
+			maxTransferMode = _T("PCIe/NVMe");
+		}
+	}
+
 	bool RunProcessCaptureOutput(const CString& executablePath, CString& output)
 	{
 		output.Empty();
@@ -1019,9 +1223,9 @@ namespace
 	// 初始化 COM/WMI 安全上下文；成功后供后续查询复用。
 	bool EnsureComInitialized()
 	{
-		// WMI 查询依赖 COM；只在首次调用时初始化一次。
-		static bool initialized = false;
-		static bool attempted = false;
+		// WMI 查询依赖 COM；COM 初始化状态是线程级的，后台加载线程需要各自初始化。
+		thread_local bool initialized = false;
+		thread_local bool attempted = false;
 		if (attempted)
 		{
 			return initialized;
@@ -2108,6 +2312,9 @@ BEGIN_MESSAGE_MAP(CMFCApplication1Dlg, CDialogEx)
 	ON_MESSAGE(WM_APP_LOAD_SYSTEM_INFO, &CMFCApplication1Dlg::OnLoadSystemInformation)
 	ON_MESSAGE(WM_APP_LOAD_SSD_INFO, &CMFCApplication1Dlg::OnLoadSsdInformation)
 	ON_MESSAGE(WM_APP_LOAD_SCREEN_INFO, &CMFCApplication1Dlg::OnLoadScreenInformation)
+	ON_MESSAGE(WM_APP_APPLY_SYSTEM_INFO, &CMFCApplication1Dlg::OnApplyLoadedSystemInformation)
+	ON_MESSAGE(WM_APP_APPLY_SSD_INFO, &CMFCApplication1Dlg::OnApplyLoadedSsdInformation)
+	ON_MESSAGE(WM_APP_APPLY_SCREEN_INFO, &CMFCApplication1Dlg::OnApplyLoadedScreenInformation)
 	ON_BN_CLICKED(IDC_BTN_APPLY_SETTINGS, &CMFCApplication1Dlg::OnBnClickedApplySettings)
 	ON_BN_CLICKED(IDC_BTN_REBOOT, &CMFCApplication1Dlg::OnBnClickedRebootSystem)
 	ON_BN_CLICKED(IDC_BTN_TOGGLE_SELECT, &CMFCApplication1Dlg::OnBnClickedToggleSelect)
@@ -2136,6 +2343,9 @@ BOOL CMFCApplication1Dlg::OnInitDialog()
 
 	SetIcon(m_hIcon, TRUE);
 	SetIcon(m_hIcon, FALSE);
+	SetWindowText(_T("SystemInspector"));
+	CenterWindowAtTwoThirdsOfScreen(*this);
+	EnableWin11Chrome(GetSafeHwnd());
 
 	BuildMainLayout();
 	CreateSettingsControls();
@@ -2245,7 +2455,6 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 			RefreshSsdTabs();
 			UpdateSsdControlLayout();
 			Invalidate();
-			UpdateWindow();
 			PostMessage(WM_APP_LOAD_SSD_INFO, 0, 0);
 		}
 	}
@@ -2265,7 +2474,6 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 			m_screenRows.push_back({ _T("状态"), _T("屏幕详情加载中...") });
 			m_scrollPos = 0;
 			Invalidate();
-			UpdateWindow();
 			PostMessage(WM_APP_LOAD_SCREEN_INFO, 0, 0);
 		}
 	}
@@ -2393,7 +2601,7 @@ BOOL CMFCApplication1Dlg::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
 void CMFCApplication1Dlg::BuildMainLayout()
 {
 	EnsureUiFonts();
-	SetWindowText(_T("SixSystemInspector"));
+	SetWindowText(_T("SystemInspector"));
 
 	CRect clientRect;
 	GetClientRect(&clientRect);
@@ -2423,7 +2631,14 @@ LRESULT CMFCApplication1Dlg::OnLoadSystemInformation(WPARAM wParam, LPARAM lPara
 {
 	UNREFERENCED_PARAMETER(wParam);
 	UNREFERENCED_PARAMETER(lParam);
-	LoadSystemInformation(false);
+	AsyncLoadRequest* request = new AsyncLoadRequest;
+	request->targetHwnd = GetSafeHwnd();
+	if (AfxBeginThread(&CMFCApplication1Dlg::LoadSystemInformationThread, request) == nullptr)
+	{
+		delete request;
+		m_loading = false;
+		Invalidate();
+	}
 	return 0;
 }
 
@@ -2431,7 +2646,14 @@ LRESULT CMFCApplication1Dlg::OnLoadSsdInformation(WPARAM wParam, LPARAM lParam)
 {
 	UNREFERENCED_PARAMETER(wParam);
 	UNREFERENCED_PARAMETER(lParam);
-	LoadSystemInformation(true);
+	AsyncLoadRequest* request = new AsyncLoadRequest;
+	request->targetHwnd = GetSafeHwnd();
+	if (AfxBeginThread(&CMFCApplication1Dlg::LoadSsdInformationThread, request) == nullptr)
+	{
+		delete request;
+		m_ssdLoading = false;
+		Invalidate();
+	}
 	return 0;
 }
 
@@ -2439,7 +2661,133 @@ LRESULT CMFCApplication1Dlg::OnLoadScreenInformation(WPARAM wParam, LPARAM lPara
 {
 	UNREFERENCED_PARAMETER(wParam);
 	UNREFERENCED_PARAMETER(lParam);
-	LoadScreenInformation();
+	AsyncLoadRequest* request = new AsyncLoadRequest;
+	request->targetHwnd = GetSafeHwnd();
+	if (AfxBeginThread(&CMFCApplication1Dlg::LoadScreenInformationThread, request) == nullptr)
+	{
+		delete request;
+		m_screenLoading = false;
+		Invalidate();
+	}
+	return 0;
+}
+
+LRESULT CMFCApplication1Dlg::OnApplyLoadedSystemInformation(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadResult* result = reinterpret_cast<AsyncLoadResult*>(wParam);
+	if (result == nullptr)
+	{
+		return 0;
+	}
+
+	m_systemRows = result->systemRows;
+	m_loading = false;
+	if (m_activePage == PAGE_SYSTEM_INFO)
+	{
+		m_scrollPos = 0;
+	}
+	delete result;
+	Invalidate();
+	return 0;
+}
+
+LRESULT CMFCApplication1Dlg::OnApplyLoadedSsdInformation(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadResult* result = reinterpret_cast<AsyncLoadResult*>(wParam);
+	if (result == nullptr)
+	{
+		return 0;
+	}
+
+	m_ssdRows = result->ssdRows;
+	m_ssdDiskRows = result->ssdDiskRows;
+	m_ssdTabTitles = result->ssdTabTitles;
+	m_activeSsdIndex = result->activeSsdIndex;
+	m_ssdLoaded = true;
+	m_ssdLoading = false;
+	m_scrollPos = 0;
+	delete result;
+
+	RefreshSsdTabs();
+	UpdateSsdControlLayout();
+	Invalidate();
+	return 0;
+}
+
+LRESULT CMFCApplication1Dlg::OnApplyLoadedScreenInformation(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadResult* result = reinterpret_cast<AsyncLoadResult*>(wParam);
+	if (result == nullptr)
+	{
+		return 0;
+	}
+
+	m_screenRows = result->screenRows;
+	m_screenLoaded = true;
+	m_screenLoading = false;
+	m_scrollPos = 0;
+	delete result;
+	Invalidate();
+	return 0;
+}
+
+void CMFCApplication1Dlg::PostAsyncLoadResult(HWND targetHwnd, UINT message, AsyncLoadResult* result)
+{
+	if (::IsWindow(targetHwnd) && ::PostMessage(targetHwnd, message, reinterpret_cast<WPARAM>(result), 0))
+	{
+		return;
+	}
+	delete result;
+}
+
+UINT CMFCApplication1Dlg::LoadSystemInformationThread(LPVOID parameter)
+{
+	AsyncLoadRequest* request = reinterpret_cast<AsyncLoadRequest*>(parameter);
+	const HWND targetHwnd = request != nullptr ? request->targetHwnd : nullptr;
+	delete request;
+
+	CMFCApplication1Dlg loader;
+	loader.LoadSystemInformation(false);
+
+	AsyncLoadResult* result = new AsyncLoadResult;
+	result->systemRows = loader.m_systemRows;
+	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_SYSTEM_INFO, result);
+	return 0;
+}
+
+UINT CMFCApplication1Dlg::LoadSsdInformationThread(LPVOID parameter)
+{
+	AsyncLoadRequest* request = reinterpret_cast<AsyncLoadRequest*>(parameter);
+	const HWND targetHwnd = request != nullptr ? request->targetHwnd : nullptr;
+	delete request;
+
+	CMFCApplication1Dlg loader;
+	loader.LoadSystemInformation(true);
+
+	AsyncLoadResult* result = new AsyncLoadResult;
+	result->ssdRows = loader.m_ssdRows;
+	result->ssdDiskRows = loader.m_ssdDiskRows;
+	result->ssdTabTitles = loader.m_ssdTabTitles;
+	result->activeSsdIndex = loader.m_activeSsdIndex;
+	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_SSD_INFO, result);
+	return 0;
+}
+
+UINT CMFCApplication1Dlg::LoadScreenInformationThread(LPVOID parameter)
+{
+	AsyncLoadRequest* request = reinterpret_cast<AsyncLoadRequest*>(parameter);
+	const HWND targetHwnd = request != nullptr ? request->targetHwnd : nullptr;
+	delete request;
+
+	CMFCApplication1Dlg loader;
+	loader.LoadScreenInformation();
+
+	AsyncLoadResult* result = new AsyncLoadResult;
+	result->screenRows = loader.m_screenRows;
+	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_SCREEN_INFO, result);
 	return 0;
 }
 
@@ -2475,7 +2823,7 @@ bool CMFCApplication1Dlg::ExportReportToFile(const CString& reportType, const CS
 
 	CTime now = CTime::GetCurrentTime();
 	CString reportText;
-	reportText.Format(_T("SixSystemInspector Report\r\nType: %s\r\nGeneratedAt: %s\r\n\r\n"),
+	reportText.Format(_T("SystemInspector Report\r\nType: %s\r\nGeneratedAt: %s\r\n\r\n"),
 		type.GetString(),
 		now.Format(_T("%Y-%m-%d %H:%M:%S")).GetString());
 
@@ -2880,17 +3228,9 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 				sourceText += _T(" + 直连补全");
 			}
 
-			CString transferMode = HasValue(info.CurrentTransferMode) ? info.CurrentTransferMode : _T("N/A");
-			CString maxTransferMode = HasValue(info.MaxTransferMode) ? info.MaxTransferMode : _T("N/A");
-			if (!HasValue(transferMode) && !HasValue(maxTransferMode))
-			{
-				const CString interfaceLower = ToLower(info.Interface);
-				if (interfaceLower.Find(_T("nvm express")) >= 0 || interfaceLower.Find(_T("nvme")) >= 0)
-				{
-					transferMode = _T("PCIe/NVMe");
-					maxTransferMode = _T("PCIe/NVMe");
-				}
-			}
+			CString transferMode = HasDisplayValue(info.CurrentTransferMode) ? info.CurrentTransferMode : _T("N/A");
+			CString maxTransferMode = HasDisplayValue(info.MaxTransferMode) ? info.MaxTransferMode : _T("N/A");
+			FillNvmeTransferModeFallback(info, transferMode, maxTransferMode);
 
 			CString smartPredict = info.DiskStatus == CAtaSmart::DISK_STATUS_BAD ? _T("是") : _T("否");
 			CString smartReason = _T("N/A");
@@ -2943,15 +3283,7 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 				}
 			}
 
-			CString deviceIdText = HasValue(info.PnpDeviceId) ? info.PnpDeviceId : _T("N/A");
-			if (!HasValue(deviceIdText))
-			{
-				const auto it = pnpByPhysicalDriveId.find(info.PhysicalDriveId);
-				if (it != pnpByPhysicalDriveId.end() && HasValue(it->second))
-				{
-					deviceIdText = it->second;
-				}
-			}
+			const CString deviceIdText = ResolveAtaSmartDeviceId(info, diskRows, pnpByPhysicalDriveId);
 
 			std::vector<InfoRow> diskDetailRows;
 			diskDetailRows.push_back({ _T("采集方式"), sourceText });
@@ -3045,7 +3377,7 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 
 			InfoRow row6;
 			row6.item = _T("调试日志");
-			row6.value = _T("请查看程序目录下 SixSystemInspector.log");
+			row6.value = _T("请查看程序目录下 SystemInspector.log");
 			diagRows.push_back(row6);
 
 			InfoRow row7;
@@ -3279,14 +3611,14 @@ void CMFCApplication1Dlg::EnsureUiFonts()
 	}
 	if (m_uiBackgroundBrush.GetSafeHandle() == nullptr)
 	{
-		m_uiBackgroundBrush.CreateSolidBrush(RGB(240, 244, 249));
+		m_uiBackgroundBrush.CreateSolidBrush(UiBackground);
 	}
 }
 
 // 绘制圆角卡片背景块。
-void CMFCApplication1Dlg::DrawRoundedCard(CDC& dc, const CRect& rect, COLORREF fillColor, int radius)
+void CMFCApplication1Dlg::DrawRoundedCard(CDC& dc, const CRect& rect, COLORREF fillColor, int radius, COLORREF borderColor)
 {
-	CPen pen(PS_SOLID, 1, fillColor);
+	CPen pen(PS_SOLID, 1, borderColor == CLR_NONE ? fillColor : borderColor);
 	CBrush brush(fillColor);
 	CPen* oldPen = dc.SelectObject(&pen);
 	CBrush* oldBrush = dc.SelectObject(&brush);
@@ -3307,29 +3639,51 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	bitmap.CreateCompatibleBitmap(&dc, clientRect.Width(), clientRect.Height());
 	CBitmap* oldBitmap = memDc.SelectObject(&bitmap);
 
-	memDc.FillSolidRect(clientRect, RGB(240, 244, 249));
+	memDc.FillSolidRect(clientRect, UiBackground);
 	memDc.SetBkMode(TRANSPARENT);
 
-	DrawRoundedCard(memDc, m_sideRect, RGB(212, 224, 239), 14);
-	DrawRoundedCard(memDc, m_contentRect, RGB(236, 242, 249), 14);
+	DrawRoundedCard(memDc, m_sideRect, UiSurfaceAlt, 16, UiBorder);
+	DrawRoundedCard(memDc, m_contentRect, UiSurface, 16, UiBorder);
 
-	const COLORREF selectedColor = RGB(88, 130, 190);
-	const COLORREF unselectedColor = RGB(200, 214, 230);
+	const COLORREF selectedColor = UiAccentSoft;
+	const COLORREF unselectedColor = UiSurfaceAlt;
 
 	DrawRoundedCard(memDc, m_infoMenuRect, m_activePage == PAGE_SYSTEM_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_settingsMenuRect, m_activePage == PAGE_SYSTEM_SETTINGS ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_ssdMenuRect, m_activePage == PAGE_SSD_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_screenMenuRect, m_activePage == PAGE_SCREEN_INFO ? selectedColor : unselectedColor, 10);
 
+	if (m_activePage == PAGE_SYSTEM_INFO) DrawAccentStrip(memDc, m_infoMenuRect, UiAccent);
+	if (m_activePage == PAGE_SYSTEM_SETTINGS) DrawAccentStrip(memDc, m_settingsMenuRect, UiAccent);
+	if (m_activePage == PAGE_SSD_INFO) DrawAccentStrip(memDc, m_ssdMenuRect, UiAccent);
+	if (m_activePage == PAGE_SCREEN_INFO) DrawAccentStrip(memDc, m_screenMenuRect, UiAccent);
+
+	memDc.SelectObject(&m_subtitleFont);
+	memDc.SetTextColor(UiSecondaryText);
+	CRect appLabelRect(m_sideRect.left + 16, m_sideRect.top + 14, m_sideRect.right - 16, m_sideRect.top + 38);
+	memDc.DrawText(_T("SystemInspector"), appLabelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
 	memDc.SelectObject(&m_menuFont);
-	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_INFO ? RGB(255, 255, 255) : RGB(52, 72, 98));
-	memDc.DrawText(_T("系统信息"), m_infoMenuRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_SETTINGS ? RGB(255, 255, 255) : RGB(52, 72, 98));
-	memDc.DrawText(_T("系统设置"), m_settingsMenuRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-	memDc.SetTextColor(m_activePage == PAGE_SSD_INFO ? RGB(255, 255, 255) : RGB(52, 72, 98));
-	memDc.DrawText(_T("SSD信息"), m_ssdMenuRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-	memDc.SetTextColor(m_activePage == PAGE_SCREEN_INFO ? RGB(255, 255, 255) : RGB(52, 72, 98));
-	memDc.DrawText(_T("屏幕详情"), m_screenMenuRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	CRect menuTextRect = m_infoMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_INFO ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("系统信息"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_settingsMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_SETTINGS ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("系统设置"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_ssdMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_SSD_INFO ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("SSD信息"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_screenMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_SCREEN_INFO ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("屏幕详情"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
 	if (m_activePage == PAGE_SYSTEM_SETTINGS)
 	{
@@ -3347,16 +3701,16 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	{
 		CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 104);
 		CRect listRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
-		DrawRoundedCard(memDc, headerRect, RGB(222, 230, 240), 12);
-		DrawRoundedCard(memDc, listRect, RGB(236, 242, 249), 12);
+		DrawRoundedCard(memDc, headerRect, UiSubtleSurface, 12, UiBorder);
+		DrawRoundedCard(memDc, listRect, UiSurface, 12, UiBorder);
 
 		memDc.SelectObject(&m_titleFont);
-		memDc.SetTextColor(RGB(19, 33, 52));
+		memDc.SetTextColor(UiText);
 		CRect titleRect(headerRect.left + 18, headerRect.top + 12, headerRect.right - 16, headerRect.top + 48);
 		memDc.DrawText(_T("系统信息概览"), titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 
 		memDc.SelectObject(&m_subtitleFont);
-		memDc.SetTextColor(RGB(85, 100, 120));
+		memDc.SetTextColor(UiSecondaryText);
 		CRect subtitleRect(headerRect.left + 18, headerRect.top + 56, headerRect.right - 16, headerRect.bottom - 10);
 		memDc.DrawText(_T("快速查看当前设备的关键硬件、固件与网络标识信息"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 
@@ -3400,7 +3754,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 		if (m_loading)
 		{
 			memDc.SelectObject(&m_valueFont);
-			memDc.SetTextColor(RGB(60, 75, 95));
+			memDc.SetTextColor(UiSecondaryText);
 			memDc.TextOutW(labelX, y, _T("正在加载系统信息，请稍候..."));
 		}
 		else
@@ -3413,16 +3767,16 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 				const InfoRow& row = m_systemRows[i];
 				const int rowHeight = i < rowHeights.size() ? rowHeights[i] : (labelLineHeight + rowPadding);
 				memDc.SelectObject(&m_labelFont);
-				memDc.SetTextColor(RGB(93, 108, 128));
+				memDc.SetTextColor(UiTertiaryText);
 				CRect labelRect(labelX, y, labelX + labelWidth, y + rowHeight);
 				memDc.DrawText(row.item, labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
 				memDc.SelectObject(&m_valueFont);
-				memDc.SetTextColor(RGB(50, 64, 83));
+				memDc.SetTextColor(UiText);
 				CRect valueRect(valueX, y + 1, valueRight, y + rowHeight);
 				memDc.DrawText(row.value, valueRect, DT_LEFT | DT_WORDBREAK);
 
-				CPen linePen(PS_SOLID, 1, RGB(220, 228, 238));
+				CPen linePen(PS_SOLID, 1, UiBorder);
 				CPen* oldLinePen = memDc.SelectObject(&linePen);
 				const int separatorY = y + rowHeight + (rowGap / 2);
 				memDc.MoveTo(labelX, separatorY);
@@ -3451,17 +3805,17 @@ void CMFCApplication1Dlg::DrawSsdInformation(CDC& dc, const CRect& clientRect)
 	CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
 	CRect tabCardRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, headerRect.bottom + 56);
 	CRect listRect(m_contentRect.left + 8, tabCardRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
-	DrawRoundedCard(dc, headerRect, RGB(222, 230, 240), 12);
-	DrawRoundedCard(dc, tabCardRect, RGB(242, 247, 252), 10);
-	DrawRoundedCard(dc, listRect, RGB(236, 242, 249), 12);
+	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
+	DrawRoundedCard(dc, tabCardRect, UiSurfaceAlt, 10, UiBorder);
+	DrawRoundedCard(dc, listRect, UiSurface, 12, UiBorder);
 
 	dc.SelectObject(&m_titleFont);
-	dc.SetTextColor(RGB(19, 33, 52));
+	dc.SetTextColor(UiText);
 	CRect titleRect(headerRect.left + 18, headerRect.top + 10, headerRect.right - 16, headerRect.top + 42);
 	dc.DrawText(_T("SSD信息"), titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 
 	dc.SelectObject(&m_subtitleFont);
-	dc.SetTextColor(RGB(85, 100, 120));
+	dc.SetTextColor(UiSecondaryText);
 	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 16, headerRect.bottom - 8);
 	dc.DrawText(_T("参考 DiskInfo 的按盘枚举思路，展示每块 SSD 的 SMART 相关状态"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 
@@ -3510,16 +3864,16 @@ void CMFCApplication1Dlg::DrawSsdInformation(CDC& dc, const CRect& clientRect)
 		const InfoRow& row = m_ssdRows[i];
 		const int rowHeight = i < rowHeights.size() ? rowHeights[i] : (labelLineHeight + rowPadding);
 		dc.SelectObject(&m_labelFont);
-		dc.SetTextColor(RGB(93, 108, 128));
+		dc.SetTextColor(UiTertiaryText);
 		CRect labelRect(labelX, y, labelX + labelWidth, y + rowHeight);
 		dc.DrawText(row.item, labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
 		dc.SelectObject(&m_valueFont);
-		dc.SetTextColor(RGB(50, 64, 83));
+		dc.SetTextColor(UiText);
 		CRect valueRect(valueX, y + 1, valueRight, y + rowHeight);
 		dc.DrawText(row.value, valueRect, DT_LEFT | DT_WORDBREAK);
 
-		CPen linePen(PS_SOLID, 1, RGB(220, 228, 238));
+		CPen linePen(PS_SOLID, 1, UiBorder);
 		CPen* oldLinePen = dc.SelectObject(&linePen);
 		const int separatorY = y + rowHeight + (rowGap / 2);
 		dc.MoveTo(labelX, separatorY);
@@ -3541,16 +3895,16 @@ void CMFCApplication1Dlg::DrawScreenInformation(CDC& dc, const CRect& clientRect
 
 	CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
 	CRect listRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
-	DrawRoundedCard(dc, headerRect, RGB(222, 230, 240), 12);
-	DrawRoundedCard(dc, listRect, RGB(236, 242, 249), 12);
+	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
+	DrawRoundedCard(dc, listRect, UiSurface, 12, UiBorder);
 
 	dc.SelectObject(&m_titleFont);
-	dc.SetTextColor(RGB(19, 33, 52));
+	dc.SetTextColor(UiText);
 	CRect titleRect(headerRect.left + 18, headerRect.top + 10, headerRect.right - 16, headerRect.top + 42);
 	dc.DrawText(_T("屏幕详情"), titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 
 	dc.SelectObject(&m_subtitleFont);
-	dc.SetTextColor(RGB(85, 100, 120));
+	dc.SetTextColor(UiSecondaryText);
 	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 16, headerRect.bottom - 8);
 	dc.DrawText(_T("基于 wEDID 接口读取 EDID 并解析显示器关键信息"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 
@@ -3599,16 +3953,16 @@ void CMFCApplication1Dlg::DrawScreenInformation(CDC& dc, const CRect& clientRect
 		const InfoRow& row = m_screenRows[i];
 		const int rowHeight = i < rowHeights.size() ? rowHeights[i] : (labelLineHeight + rowPadding);
 		dc.SelectObject(&m_labelFont);
-		dc.SetTextColor(RGB(93, 108, 128));
+		dc.SetTextColor(UiTertiaryText);
 		CRect labelRect(labelX, y, labelX + labelWidth, y + rowHeight);
 		dc.DrawText(row.item, labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
 		dc.SelectObject(&m_valueFont);
-		dc.SetTextColor(RGB(50, 64, 83));
+		dc.SetTextColor(UiText);
 		CRect valueRect(valueX, y + 1, valueRight, y + rowHeight);
 		dc.DrawText(row.value, valueRect, DT_LEFT | DT_WORDBREAK);
 
-		CPen linePen(PS_SOLID, 1, RGB(220, 228, 238));
+		CPen linePen(PS_SOLID, 1, UiBorder);
 		CPen* oldLinePen = dc.SelectObject(&linePen);
 		const int separatorY = y + rowHeight + (rowGap / 2);
 		dc.MoveTo(labelX, separatorY);
@@ -3668,10 +4022,10 @@ void CMFCApplication1Dlg::DrawSystemSettings(CDC& dc, const CRect& clientRect)
 	const int totalHeight = 10 + headerHeight + gap1 + optionsHeight + gap2 + buttonHeight + gap3 + statusHeight + 10;
 	UpdateVerticalScrollBar(totalHeight, max(1, m_contentRect.Height() - 16));
 
-	DrawRoundedCard(dc, headerRect, RGB(222, 230, 240), 12);
-	DrawRoundedCard(dc, optionsCardRect, RGB(250, 252, 254), 10);
-	DrawRoundedCard(dc, buttonCardRect, RGB(247, 250, 253), 8);
-	DrawRoundedCard(dc, statusCardRect, RGB(248, 250, 252), 8);
+	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
+	DrawRoundedCard(dc, optionsCardRect, UiSurface, 10, UiBorder);
+	DrawRoundedCard(dc, buttonCardRect, UiSurfaceAlt, 8, UiBorder);
+	DrawRoundedCard(dc, statusCardRect, UiSurfaceAlt, 8, UiBorder);
 
 	const int optionTop = optionsCardRect.top + optionInnerMargin;
 	const int optionWidth = optionsCardRect.Width() - optionInnerMargin * 2;
@@ -3689,23 +4043,23 @@ void CMFCApplication1Dlg::DrawSystemSettings(CDC& dc, const CRect& clientRect)
 		? CRect(grpPower.left, grpPower.bottom + groupGapY, grpPower.right, grpPower.bottom + groupGapY + groupHeightSmall)
 		: CRect(grpBehavior.left, grpBehavior.bottom + groupGapY, grpBehavior.right, grpBehavior.bottom + groupGapY + groupHeightSmall);
 
-	DrawRoundedCard(dc, grpSecurity, RGB(240, 244, 249), 8);
-	DrawRoundedCard(dc, grpBehavior, RGB(240, 244, 249), 8);
-	DrawRoundedCard(dc, grpPower, RGB(240, 244, 249), 8);
-	DrawRoundedCard(dc, grpUpdate, RGB(240, 244, 249), 8);
+	DrawRoundedCard(dc, grpSecurity, UiSurfaceAlt, 8, UiBorder);
+	DrawRoundedCard(dc, grpBehavior, UiSurfaceAlt, 8, UiBorder);
+	DrawRoundedCard(dc, grpPower, UiSurfaceAlt, 8, UiBorder);
+	DrawRoundedCard(dc, grpUpdate, UiSurfaceAlt, 8, UiBorder);
 
 	dc.SelectObject(&m_titleFont);
-	dc.SetTextColor(RGB(19, 33, 52));
+	dc.SetTextColor(UiText);
 	CRect titleRect(headerRect.left + 16, headerRect.top + 10, headerRect.right - 16, headerRect.top + 40);
 	dc.DrawText(_T("系统设置优化"), titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
 	dc.SelectObject(&m_subtitleFont);
-	dc.SetTextColor(RGB(85, 100, 120));
+	dc.SetTextColor(UiSecondaryText);
 	CRect subtitleRect(headerRect.left + 16, headerRect.top + 40, headerRect.right - 16, headerRect.bottom - 8);
 	dc.DrawText(_T("勾选后可执行系统优化项"), subtitleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
 	dc.SelectObject(&m_labelFont);
-	dc.SetTextColor(RGB(64, 84, 106));
+	dc.SetTextColor(UiSecondaryText);
 	CRect groupTitleRect = grpSecurity;
 	groupTitleRect.DeflateRect(10, 8);
 	groupTitleRect.bottom = groupTitleRect.top + titleHeight;
@@ -3750,10 +4104,10 @@ void CMFCApplication1Dlg::RecalcLayoutRects(const CRect& clientRect)
 {
 	const int margin = 12;
 	const int availableWidth = max(320, clientRect.Width() - margin * 2);
-	const int sideWidth = max(216, min(440, availableWidth / 2));
+	const int sideWidth = max(224, min(280, availableWidth / 4));
 	m_sideRect = CRect(margin, margin, margin + sideWidth, clientRect.bottom - margin);
-	m_contentRect = CRect(m_sideRect.right + 10, margin, clientRect.right - margin, clientRect.bottom - margin);
-	m_infoMenuRect = CRect(m_sideRect.left + 10, m_sideRect.top + 18, m_sideRect.right - 10, m_sideRect.top + 70);
+	m_contentRect = CRect(m_sideRect.right + 12, margin, clientRect.right - margin, clientRect.bottom - margin);
+	m_infoMenuRect = CRect(m_sideRect.left + 10, m_sideRect.top + 54, m_sideRect.right - 10, m_sideRect.top + 102);
 	m_ssdMenuRect = CRect(m_sideRect.left + 10, m_infoMenuRect.bottom + 10, m_sideRect.right - 10, m_infoMenuRect.bottom + 62);
 	m_screenMenuRect = CRect(m_sideRect.left + 10, m_ssdMenuRect.bottom + 10, m_sideRect.right - 10, m_ssdMenuRect.bottom + 62);
 	m_settingsMenuRect = CRect(m_sideRect.left + 10, m_screenMenuRect.bottom + 10, m_sideRect.right - 10, m_screenMenuRect.bottom + 62);
@@ -3777,6 +4131,7 @@ void CMFCApplication1Dlg::CreateSettingsControls()
 		checkBox->SetFont(&m_settingsFont);
 		checkBox->SetCheck(BST_CHECKED);
 		checkBox->ModifyStyleEx(0, WS_EX_TRANSPARENT);
+		SetWindowTheme(checkBox->GetSafeHwnd(), L"Explorer", nullptr);
 	}
 
 	m_btnApply.Create(_T("应用选中的设置"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_BTN_APPLY_SETTINGS);
@@ -3785,6 +4140,9 @@ void CMFCApplication1Dlg::CreateSettingsControls()
 	m_btnApply.SetFont(&m_settingsFont);
 	m_btnReboot.SetFont(&m_settingsFont);
 	m_btnToggleSelect.SetFont(&m_settingsFont);
+	SetWindowTheme(m_btnApply.GetSafeHwnd(), L"Explorer", nullptr);
+	SetWindowTheme(m_btnReboot.GetSafeHwnd(), L"Explorer", nullptr);
+	SetWindowTheme(m_btnToggleSelect.GetSafeHwnd(), L"Explorer", nullptr);
 
 	m_statusText.Create(_T("就绪"), WS_CHILD | SS_LEFT, CRect(0, 0, 10, 10), this, IDC_STATUS_TEXT);
 	m_adminHintText.Create(_T("* 请以管理员身份运行本程序，否则部分设置可能无效"), WS_CHILD | SS_LEFT, CRect(0, 0, 10, 10), this, IDC_ADMIN_HINT_TEXT);
@@ -3805,6 +4163,7 @@ void CMFCApplication1Dlg::CreateSsdControls()
 {
 	m_ssdTab.Create(WS_CHILD | WS_TABSTOP | TCS_TABS | TCS_SINGLELINE, CRect(0, 0, 10, 10), this, IDC_SSD_TAB);
 	m_ssdTab.SetFont(&m_settingsFont);
+	SetWindowTheme(m_ssdTab.GetSafeHwnd(), L"Explorer", nullptr);
 	RefreshSsdTabs();
 	UpdateSsdControlLayout();
 }
@@ -3934,12 +4293,13 @@ void CMFCApplication1Dlg::UpdateSettingsControlLayout()
 	m_chkPower.MoveWindow(grpPower.left + groupPadding, grpPower.top + titleSpace, grpPower.Width() - groupPadding * 2, itemHeight, TRUE);
 	m_chkWindowsUpdate.MoveWindow(grpUpdate.left + groupPadding, grpUpdate.top + titleSpace, grpUpdate.Width() - groupPadding * 2, itemHeight, TRUE);
 
-	const int buttonLeft = buttonCardRect.left + 10;
-	const int buttonWidth = max(88, (buttonCardRect.Width() - 28) / 3);
-	const int buttonTop = buttonCardRect.top + 8;
-	m_btnApply.MoveWindow(buttonLeft, buttonTop, buttonWidth, 36, TRUE);
-	m_btnReboot.MoveWindow(buttonLeft + buttonWidth + 4, buttonTop, buttonWidth, 36, TRUE);
-	m_btnToggleSelect.MoveWindow(buttonLeft + (buttonWidth + 4) * 2, buttonTop, buttonWidth, 36, TRUE);
+	const int buttonLeft = buttonCardRect.left + 12;
+	const int buttonGap = 8;
+	const int buttonWidth = max(96, (buttonCardRect.Width() - 24 - buttonGap * 2) / 3);
+	const int buttonTop = buttonCardRect.top + 7;
+	m_btnApply.MoveWindow(buttonLeft, buttonTop, buttonWidth, 38, TRUE);
+	m_btnReboot.MoveWindow(buttonLeft + buttonWidth + buttonGap, buttonTop, buttonWidth, 38, TRUE);
+	m_btnToggleSelect.MoveWindow(buttonLeft + (buttonWidth + buttonGap) * 2, buttonTop, buttonWidth, 38, TRUE);
 
 	const int statusLineHeight = max(20, static_cast<int>(tmSettings.tmHeight + tmSettings.tmExternalLeading + 2));
 	m_statusText.MoveWindow(statusCardRect.left + 10, statusCardRect.top + 6, statusCardRect.Width() - 20, statusLineHeight, TRUE);
@@ -4038,9 +4398,9 @@ HBRUSH CMFCApplication1Dlg::OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor)
 		return hbr;
 	}
 
-	pDC->SetBkMode(OPAQUE);
-	pDC->SetBkColor(RGB(240, 244, 249));
-	pDC->SetTextColor(id == IDC_ADMIN_HINT_TEXT ? RGB(180, 106, 78) : RGB(47, 58, 68));
+	pDC->SetBkMode(TRANSPARENT);
+	pDC->SetBkColor(UiSurfaceAlt);
+	pDC->SetTextColor(id == IDC_ADMIN_HINT_TEXT ? UiWarningText : UiText);
 	return static_cast<HBRUSH>(m_uiBackgroundBrush.GetSafeHandle());
 }
 

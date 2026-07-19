@@ -112,7 +112,7 @@ BOOL CMFCApplication1App::InitInstance()
 	// 更改用于存储设置的注册表项
 	// TODO: 应适当修改该字符串，
 	// 例如修改为公司或组织名
-	SetRegistryKey(_T("Sixunited\\SixSystemInspector"));
+	SetRegistryKey(_T("Sixunited\\SystemInspector"));
 
 	CString reportType;
 	CString reportPath;

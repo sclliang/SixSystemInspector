@@ -22,8 +22,8 @@
     <VCProjectVersion>18.0</VCProjectVersion>
     <ProjectGuid>{F52A9A93-2B96-112B-316A-10A653AEE5D6}</ProjectGuid>
     <Keyword>MFCProj</Keyword>
-    <RootNamespace>SixSystemInspector</RootNamespace>
-    <ProjectName>SixSystemInspector</ProjectName>
+    <RootNamespace>SystemInspector</RootNamespace>
+    <ProjectName>SystemInspector</ProjectName>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -76,7 +76,7 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
-    <TargetName>SixSystemInspector</TargetName>
+    <TargetName>SystemInspector</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>

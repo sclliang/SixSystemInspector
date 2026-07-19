@@ -53,6 +53,12 @@ protected:
 	afx_msg LRESULT OnLoadSsdInformation(WPARAM wParam, LPARAM lParam);
 	// 处理异步加载屏幕详情消息。
 	afx_msg LRESULT OnLoadScreenInformation(WPARAM wParam, LPARAM lParam);
+	// 接收后台线程完成后的系统信息结果。
+	afx_msg LRESULT OnApplyLoadedSystemInformation(WPARAM wParam, LPARAM lParam);
+	// 接收后台线程完成后的 SSD 信息结果。
+	afx_msg LRESULT OnApplyLoadedSsdInformation(WPARAM wParam, LPARAM lParam);
+	// 接收后台线程完成后的屏幕详情结果。
+	afx_msg LRESULT OnApplyLoadedScreenInformation(WPARAM wParam, LPARAM lParam);
 	// 处理控件颜色与背景刷设置。
 	afx_msg HBRUSH OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor);
 	// 处理“应用设置”按钮点击。
@@ -78,7 +84,7 @@ public:
 	// 确保界面绘制所需字体和画刷已创建。
 	void EnsureUiFonts();
 	// 绘制圆角卡片背景。
-	void DrawRoundedCard(CDC& dc, const CRect& rect, COLORREF fillColor, int radius);
+	void DrawRoundedCard(CDC& dc, const CRect& rect, COLORREF fillColor, int radius, COLORREF borderColor = CLR_NONE);
 	// 绘制主界面（根据当前页分发绘制逻辑）。
 	void DrawSystemInformation(CDC& dc, const CRect& clientRect);
 	// 绘制“SSD信息”页面。
@@ -154,6 +160,26 @@ private:
 		CString item;
 		CString value;
 	};
+
+	struct AsyncLoadRequest
+	{
+		HWND targetHwnd = nullptr;
+	};
+
+	struct AsyncLoadResult
+	{
+		std::vector<InfoRow> systemRows;
+		std::vector<InfoRow> ssdRows;
+		std::vector<InfoRow> screenRows;
+		std::vector<std::vector<InfoRow>> ssdDiskRows;
+		std::vector<CString> ssdTabTitles;
+		int activeSsdIndex = 0;
+	};
+
+	static UINT LoadSystemInformationThread(LPVOID parameter);
+	static UINT LoadSsdInformationThread(LPVOID parameter);
+	static UINT LoadScreenInformationThread(LPVOID parameter);
+	static void PostAsyncLoadResult(HWND targetHwnd, UINT message, AsyncLoadResult* result);
 
 	// 系统信息数据与绘制资源。
 	std::vector<InfoRow> m_systemRows;

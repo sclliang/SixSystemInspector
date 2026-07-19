@@ -83,17 +83,17 @@ IDR_WUB_INI             RCDATA                  "res\\Wub.ini"
 
 IDD_ABOUTBOX DIALOGEX 0, 0, 190, 62
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "关于 SixSystemInspector"
+CAPTION "关于 SystemInspector"
 FONT 9, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
     ICON            IDR_MAINFRAME,IDC_STATIC,14,14,21,20
-    LTEXT           "SixSystemInspector，版本 1.0.0.1",IDC_STATIC,42,14,136,8,SS_NOPREFIX
+    LTEXT           "SystemInspector，版本 1.0.0.1",IDC_STATIC,42,14,136,8,SS_NOPREFIX
     LTEXT           "版权所有 (C) 2026 Sixunited",IDC_STATIC,42,26,136,8
     DEFPUSHBUTTON   "确定",IDOK,133,41,50,14,WS_GROUP
 END
 
 IDD_MFCAPPLICATION1_DIALOG DIALOGEX 0, 0, 507, 347
-STYLE DS_SETFONT | DS_FIXEDSYS | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VSCROLL
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_VSCROLL
 EXSTYLE WS_EX_APPWINDOW
 FONT 10, "Microsoft YaHei UI", 0, 0, 0x1
 BEGIN
@@ -123,12 +123,12 @@ BEGIN
         BLOCK "080404B0"
         BEGIN
             VALUE "CompanyName", "Sixunited"
-            VALUE "FileDescription", "SixSystemInspector - Windows System Detection and Optimization Tool"
+            VALUE "FileDescription", "SystemInspector - Windows System Detection and Optimization Tool"
             VALUE "FileVersion", "1.0.0.1"
-            VALUE "InternalName", "SixSystemInspector.exe"
+            VALUE "InternalName", "SystemInspector.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026 Sixunited. Author: Sclliang. All rights reserved."
-            VALUE "OriginalFilename", "SixSystemInspector.exe"
-            VALUE "ProductName", "SixSystemInspector"
+            VALUE "OriginalFilename", "SystemInspector.exe"
+            VALUE "ProductName", "SystemInspector"
             VALUE "ProductVersion", "1.0.0.1"
             VALUE "Comments", "Author: Sclliang"
         END
@@ -185,7 +185,7 @@ END
 
 STRINGTABLE
 BEGIN
-    IDS_ABOUTBOX            "关于 SixSystemInspector(&A)..."
+    IDS_ABOUTBOX            "关于 SystemInspector(&A)..."
 END
 
 #endif    // 中文(简体，中国) resources
