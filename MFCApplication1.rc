@@ -87,7 +87,7 @@ CAPTION "关于 SystemInspector"
 FONT 9, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
     ICON            IDR_MAINFRAME,IDC_STATIC,14,14,21,20
-    LTEXT           "SystemInspector，版本 1.0.0.1",IDC_STATIC,42,14,136,8,SS_NOPREFIX
+    LTEXT           "SystemInspector，版本 1.0.3.0",IDC_STATIC,42,14,136,8,SS_NOPREFIX
     LTEXT           "版权所有 (C) 2026 Sixunited",IDC_STATIC,42,26,136,8
     DEFPUSHBUTTON   "确定",IDOK,133,41,50,14,WS_GROUP
 END
@@ -106,8 +106,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,1
- PRODUCTVERSION 1,0,0,1
+ FILEVERSION 1,0,3,0
+ PRODUCTVERSION 1,0,3,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -124,12 +124,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Sixunited"
             VALUE "FileDescription", "SystemInspector - Windows System Detection and Optimization Tool"
-            VALUE "FileVersion", "1.0.0.1"
+            VALUE "FileVersion", "1.0.3.0"
             VALUE "InternalName", "SystemInspector.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026 Sixunited. Author: Sclliang. All rights reserved."
             VALUE "OriginalFilename", "SystemInspector.exe"
             VALUE "ProductName", "SystemInspector"
-            VALUE "ProductVersion", "1.0.0.1"
+            VALUE "ProductVersion", "1.0.3.0"
             VALUE "Comments", "Author: Sclliang"
         END
     END
