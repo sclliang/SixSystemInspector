@@ -258,6 +258,16 @@
         </article>
 
         <article class="module">
+          <h3>电池日志</h3>
+          <p>通过 <code>powercfg /batteryreport</code> 导出电池使用与容量 HTML 报告。页面会显示生成状态、保存路径、文件大小和生成时间；点击“详情”可在默认浏览器中打开报告，点击“刷新”会重新导出并覆盖程序目录下的 <code>SystemInspector-BatteryReport.html</code>。</p>
+        </article>
+
+        <article class="module">
+          <h3>电源日志</h3>
+          <p>通过 <code>powercfg /sleepstudy</code> 导出睡眠与电源行为 HTML 报告。页面会显示生成状态、保存路径、文件大小和生成时间；点击“详情”可在默认浏览器中打开报告，点击“刷新”会重新导出并覆盖程序目录下的 <code>SystemInspector-SleepStudy.html</code>。</p>
+        </article>
+
+        <article class="module">
           <h3>系统设置</h3>
           <p>查看或调整 UAC、Windows 防火墙、安全中心提示、崩溃自动重启、完整内存转储、屏幕保护、电源策略和 Windows 自动更新等设置。</p>
         </article>
@@ -311,6 +321,7 @@ SystemInspector.exe -Report EDID "D:\Temp\edid-report.txt"</code></pre>
       <ul>
         <li>程序需要管理员权限，部分信息在普通权限下可能无法读取。</li>
         <li>屏幕详情只读取当前活动显示器，不读取历史连接过的显示器记录。</li>
+        <li>电池日志和电源日志保存在程序 EXE 所在目录，刷新会覆盖同名 HTML 报告文件。</li>
         <li>导出报告可能包含序列号、UUID、MAC 地址等设备标识信息，请注意保存和传输安全。</li>
         <li>系统设置页面涉及 Windows 配置修改，操作前请确认当前需求。</li>
       </ul>

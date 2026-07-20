@@ -70,6 +70,8 @@ namespace
 	constexpr int PAGE_SYSTEM_STATUS = 4;
 	constexpr int PAGE_STARTUP_ITEMS = 5;
 	constexpr int PAGE_ACPI_INFO = 6;
+	constexpr int PAGE_BATTERY_LOG = 7;
+	constexpr int PAGE_POWER_LOG = 8;
 	constexpr UINT IDC_CHK_UAC = 3001;
 	constexpr UINT IDC_CHK_FIREWALL = 3002;
 	constexpr UINT IDC_CHK_SEC_CENTER = 3003;
@@ -100,6 +102,10 @@ namespace
 	constexpr UINT ID_STARTUP_MENU_DISABLE = 3041;
 	constexpr UINT ID_STARTUP_MENU_DELETE = 3042;
 	constexpr UINT ID_STARTUP_MENU_REFRESH = 3043;
+	constexpr UINT IDC_BATTERY_LOG_DETAILS = 3050;
+	constexpr UINT IDC_POWER_LOG_DETAILS = 3051;
+	constexpr UINT IDC_BATTERY_LOG_REFRESH = 3052;
+	constexpr UINT IDC_POWER_LOG_REFRESH = 3053;
 	constexpr UINT IDC_OPTIONS_START = IDC_CHK_UAC;
 	constexpr UINT IDC_OPTIONS_END = IDC_CHK_WINDOWS_UPDATE;
 	const COLORREF UiBackground = RGB(243, 243, 243);
@@ -123,6 +129,9 @@ namespace
 		const CString& wmiNamespace,
 		const CString& wql,
 		const std::vector<CString>& propertyNames);
+	CString GetPowerCfgReportPath(const CString& fileName);
+	CString FormatFileSize(ULONGLONG bytes);
+	CString FormatFileTime(const CTime& time);
 
 	void EnableWin11Chrome(HWND hwnd)
 	{
@@ -219,6 +228,46 @@ namespace
 		normalized.Replace(_T(" / "), _T("\r\n"));
 		normalized.Replace(_T(" | "), _T("\r\n"));
 		return normalized;
+	}
+
+	CString GetPowerCfgReportPath(const CString& fileName)
+	{
+		TCHAR modulePath[MAX_PATH] = {};
+		const DWORD length = GetModuleFileName(nullptr, modulePath, _countof(modulePath));
+		CString directory = (length > 0 && length < _countof(modulePath)) ? CString(modulePath) : CString(_T("."));
+		const int slash = directory.ReverseFind(_T('\\'));
+		if (slash >= 0)
+		{
+			directory = directory.Left(slash + 1);
+		}
+		else if (!directory.IsEmpty() && directory.Right(1) != _T("\\"))
+		{
+			directory += _T("\\");
+		}
+		return directory + fileName;
+	}
+
+	CString FormatFileSize(ULONGLONG bytes)
+	{
+		CString result;
+		if (bytes >= 1024ULL * 1024ULL)
+		{
+			result.Format(_T("%.2f MB"), static_cast<double>(bytes) / (1024.0 * 1024.0));
+		}
+		else if (bytes >= 1024ULL)
+		{
+			result.Format(_T("%.1f KB"), static_cast<double>(bytes) / 1024.0);
+		}
+		else
+		{
+			result.Format(_T("%llu B"), bytes);
+		}
+		return result;
+	}
+
+	CString FormatFileTime(const CTime& time)
+	{
+		return time.Format(_T("%Y-%m-%d %H:%M:%S"));
 	}
 
 	// 判断是否为“通用显示器”这类无辨识度名称。
@@ -3373,6 +3422,10 @@ BEGIN_MESSAGE_MAP(CMFCApplication1Dlg, CDialogEx)
 	ON_BN_CLICKED(IDC_STARTUP_REFRESH, &CMFCApplication1Dlg::OnBnClickedStartupRefresh)
 	ON_BN_CLICKED(IDC_STARTUP_BROWSE, &CMFCApplication1Dlg::OnBnClickedStartupBrowse)
 	ON_BN_CLICKED(IDC_STARTUP_ADD, &CMFCApplication1Dlg::OnBnClickedStartupAdd)
+	ON_BN_CLICKED(IDC_BATTERY_LOG_DETAILS, &CMFCApplication1Dlg::OnBnClickedBatteryLogDetails)
+	ON_BN_CLICKED(IDC_BATTERY_LOG_REFRESH, &CMFCApplication1Dlg::OnBnClickedBatteryLogRefresh)
+	ON_BN_CLICKED(IDC_POWER_LOG_DETAILS, &CMFCApplication1Dlg::OnBnClickedPowerLogDetails)
+	ON_BN_CLICKED(IDC_POWER_LOG_REFRESH, &CMFCApplication1Dlg::OnBnClickedPowerLogRefresh)
 	ON_COMMAND_RANGE(IDC_OPTIONS_START, IDC_OPTIONS_END, &CMFCApplication1Dlg::OnSettingsOptionChanged)
 	ON_NOTIFY(TCN_SELCHANGE, IDC_SSD_TAB, &CMFCApplication1Dlg::OnTcnSelchangeSsdTab)
 	ON_NOTIFY(LVN_ITEMCHANGED, IDC_STARTUP_LIST, &CMFCApplication1Dlg::OnLvnItemchangedStartupList)
@@ -3409,6 +3462,7 @@ BOOL CMFCApplication1Dlg::OnInitDialog()
 	CreateSettingsControls();
 	CreateSsdControls();
 	CreateStartupControls();
+	CreatePowerLogControls();
 	UpdatePageVisibility();
 	// 先显示界面，再通过自定义消息异步加载数据，提升启动响应速度。
 	m_loading = true;
@@ -3563,6 +3617,26 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 			PostMessage(WM_APP_LOAD_SCREEN_INFO, 0, 0);
 		}
 	}
+	else if (m_batteryLogMenuRect.PtInRect(point))
+	{
+		if (m_activePage != PAGE_BATTERY_LOG)
+		{
+			m_activePage = PAGE_BATTERY_LOG;
+			UpdatePageVisibility();
+			EnsurePowerCfgReport(true);
+			Invalidate();
+		}
+	}
+	else if (m_powerLogMenuRect.PtInRect(point))
+	{
+		if (m_activePage != PAGE_POWER_LOG)
+		{
+			m_activePage = PAGE_POWER_LOG;
+			UpdatePageVisibility();
+			EnsurePowerCfgReport(false);
+			Invalidate();
+		}
+	}
 
 	CDialogEx::OnLButtonDown(nFlags, point);
 }
@@ -3575,7 +3649,9 @@ void CMFCApplication1Dlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 		m_activePage != PAGE_ACPI_INFO &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
-		m_activePage != PAGE_SCREEN_INFO)
+		m_activePage != PAGE_SCREEN_INFO &&
+		m_activePage != PAGE_BATTERY_LOG &&
+		m_activePage != PAGE_POWER_LOG)
 	{
 		CDialogEx::OnVScroll(nSBCode, nPos, pScrollBar);
 		return;
@@ -3645,7 +3721,9 @@ BOOL CMFCApplication1Dlg::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
 		m_activePage != PAGE_ACPI_INFO &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
-		m_activePage != PAGE_SCREEN_INFO)
+		m_activePage != PAGE_SCREEN_INFO &&
+		m_activePage != PAGE_BATTERY_LOG &&
+		m_activePage != PAGE_POWER_LOG)
 	{
 		return CDialogEx::OnMouseWheel(nFlags, zDelta, pt);
 	}
@@ -3706,6 +3784,7 @@ void CMFCApplication1Dlg::AdjustLayout(int cx, int cy)
 	UpdateSettingsControlLayout();
 	UpdateSsdControlLayout();
 	UpdateStartupControlLayout();
+	UpdatePowerLogControlLayout();
 }
 
 // 向系统信息数据源追加一条展示记录。
@@ -4781,6 +4860,8 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	DrawRoundedCard(memDc, m_settingsMenuRect, m_activePage == PAGE_SYSTEM_SETTINGS ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_ssdMenuRect, m_activePage == PAGE_SSD_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_screenMenuRect, m_activePage == PAGE_SCREEN_INFO ? selectedColor : unselectedColor, 10);
+	DrawRoundedCard(memDc, m_batteryLogMenuRect, m_activePage == PAGE_BATTERY_LOG ? selectedColor : unselectedColor, 10);
+	DrawRoundedCard(memDc, m_powerLogMenuRect, m_activePage == PAGE_POWER_LOG ? selectedColor : unselectedColor, 10);
 
 	if (m_activePage == PAGE_SYSTEM_INFO) DrawAccentStrip(memDc, m_infoMenuRect, UiAccent);
 	if (m_activePage == PAGE_SYSTEM_STATUS) DrawAccentStrip(memDc, m_statusMenuRect, UiAccent);
@@ -4789,6 +4870,8 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	if (m_activePage == PAGE_SYSTEM_SETTINGS) DrawAccentStrip(memDc, m_settingsMenuRect, UiAccent);
 	if (m_activePage == PAGE_SSD_INFO) DrawAccentStrip(memDc, m_ssdMenuRect, UiAccent);
 	if (m_activePage == PAGE_SCREEN_INFO) DrawAccentStrip(memDc, m_screenMenuRect, UiAccent);
+	if (m_activePage == PAGE_BATTERY_LOG) DrawAccentStrip(memDc, m_batteryLogMenuRect, UiAccent);
+	if (m_activePage == PAGE_POWER_LOG) DrawAccentStrip(memDc, m_powerLogMenuRect, UiAccent);
 
 	memDc.SelectObject(&m_subtitleFont);
 	memDc.SetTextColor(UiSecondaryText);
@@ -4810,7 +4893,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
 	memDc.SetTextColor(m_activePage == PAGE_STARTUP_ITEMS ? UiText : UiSecondaryText);
-	memDc.DrawText(_T("启动项"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	memDc.DrawText(_T("开机自启"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 	menuTextRect = m_acpiMenuRect;
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
@@ -4831,6 +4914,16 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	menuTextRect.right -= 12;
 	memDc.SetTextColor(m_activePage == PAGE_SCREEN_INFO ? UiText : UiSecondaryText);
 	memDc.DrawText(_T("屏幕详情"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_batteryLogMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_BATTERY_LOG ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("电池日志"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_powerLogMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_POWER_LOG ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("电源日志"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
 	if (m_activePage == PAGE_SYSTEM_SETTINGS)
 	{
@@ -4855,6 +4948,14 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	else if (m_activePage == PAGE_SCREEN_INFO)
 	{
 		DrawScreenInformation(memDc, clientRect);
+	}
+	else if (m_activePage == PAGE_BATTERY_LOG)
+	{
+		DrawPowerCfgReportPage(memDc, clientRect, _T("电池日志"), _T("使用 powercfg /batteryreport 导出电池使用与容量报告"), m_batteryLogRows);
+	}
+	else if (m_activePage == PAGE_POWER_LOG)
+	{
+		DrawPowerCfgReportPage(memDc, clientRect, _T("电源日志"), _T("使用 powercfg /sleepstudy 导出睡眠与电源行为报告"), m_powerLogRows);
 	}
 	else
 	{
@@ -5132,6 +5233,104 @@ void CMFCApplication1Dlg::DrawScreenInformation(CDC& dc, const CRect& clientRect
 		if (y > contentBottom + 20)
 		{
 			break;
+		}
+	}
+	dc.RestoreDC(oldDc);
+}
+
+void CMFCApplication1Dlg::DrawPowerCfgReportPage(CDC& dc, const CRect& clientRect, const CString& title, const CString& subtitle, const std::vector<InfoRow>& rows)
+{
+	UNREFERENCED_PARAMETER(clientRect);
+
+	CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
+	CRect listRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
+	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
+	DrawRoundedCard(dc, listRect, UiSurface, 12, UiBorder);
+
+	dc.SelectObject(&m_titleFont);
+	dc.SetTextColor(UiText);
+	CRect titleRect(headerRect.left + 18, headerRect.top + 10, headerRect.right - 230, headerRect.top + 42);
+	dc.DrawText(title, titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+	dc.SelectObject(&m_subtitleFont);
+	dc.SetTextColor(UiSecondaryText);
+	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 230, headerRect.bottom - 8);
+	dc.DrawText(subtitle, subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+	const int labelX = listRect.left + 16;
+	const int labelWidth = 178;
+	const int valueX = labelX + labelWidth + 34;
+	const int contentTop = listRect.top + 14;
+	const int contentBottom = listRect.bottom - 12;
+	const int contentWidth = (listRect.right - 16) - valueX;
+	const int valueRight = valueX + contentWidth;
+
+	TEXTMETRIC labelTm = {};
+	dc.SelectObject(&m_labelFont);
+	dc.GetTextMetrics(&labelTm);
+	const int labelLineHeight = max(static_cast<int>(labelTm.tmHeight + labelTm.tmExternalLeading), 24);
+
+	TEXTMETRIC valueTm = {};
+	dc.SelectObject(&m_valueFont);
+	dc.GetTextMetrics(&valueTm);
+	const int valueLineHeight = max(static_cast<int>(valueTm.tmHeight + valueTm.tmExternalLeading), 24);
+	const int rowPadding = 8;
+	const int rowGap = 10;
+
+	std::vector<int> rowHeights;
+	rowHeights.reserve(rows.size());
+	int totalHeight = 14;
+	for (const InfoRow& row : rows)
+	{
+		CRect calcRect(0, 0, max(contentWidth, 80), 0);
+		dc.SelectObject(&m_valueFont);
+		dc.DrawText(row.value, calcRect, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+		const int valueHeight = max(valueLineHeight, calcRect.Height());
+		const int rowHeight = max(labelLineHeight, valueHeight) + rowPadding;
+		rowHeights.push_back(rowHeight);
+		totalHeight += rowHeight + rowGap;
+	}
+	totalHeight += 10;
+	UpdateVerticalScrollBar(totalHeight, max(1, listRect.Height() - 4));
+
+	int y = contentTop - m_scrollPos;
+	const int oldDc = dc.SaveDC();
+	dc.IntersectClipRect(listRect.left + 6, listRect.top + 6, listRect.right - 6, listRect.bottom - 6);
+
+	if (rows.empty())
+	{
+		dc.SelectObject(&m_valueFont);
+		dc.SetTextColor(UiSecondaryText);
+		dc.TextOutW(labelX, y, _T("正在生成日志，请稍候..."));
+	}
+	else
+	{
+		for (size_t i = 0; i < rows.size(); ++i)
+		{
+			const InfoRow& row = rows[i];
+			const int rowHeight = i < rowHeights.size() ? rowHeights[i] : (labelLineHeight + rowPadding);
+			dc.SelectObject(&m_labelFont);
+			dc.SetTextColor(UiTertiaryText);
+			CRect labelRect(labelX, y, labelX + labelWidth, y + rowHeight);
+			dc.DrawText(row.item, labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+			dc.SelectObject(&m_valueFont);
+			dc.SetTextColor(UiText);
+			CRect valueRect(valueX, y + 1, valueRight, y + rowHeight);
+			dc.DrawText(row.value, valueRect, DT_LEFT | DT_WORDBREAK);
+
+			CPen linePen(PS_SOLID, 1, UiBorder);
+			CPen* oldLinePen = dc.SelectObject(&linePen);
+			const int separatorY = y + rowHeight + (rowGap / 2);
+			dc.MoveTo(labelX, separatorY);
+			dc.LineTo(valueRight, separatorY);
+			dc.SelectObject(oldLinePen);
+
+			y += rowHeight + rowGap;
+			if (y > contentBottom + 20)
+			{
+				break;
+			}
 		}
 	}
 	dc.RestoreDC(oldDc);
@@ -5493,7 +5692,9 @@ void CMFCApplication1Dlg::RecalcLayoutRects(const CRect& clientRect)
 	m_acpiMenuRect = CRect(m_sideRect.left + 10, m_startupMenuRect.bottom + 10, m_sideRect.right - 10, m_startupMenuRect.bottom + 62);
 	m_ssdMenuRect = CRect(m_sideRect.left + 10, m_acpiMenuRect.bottom + 10, m_sideRect.right - 10, m_acpiMenuRect.bottom + 62);
 	m_screenMenuRect = CRect(m_sideRect.left + 10, m_ssdMenuRect.bottom + 10, m_sideRect.right - 10, m_ssdMenuRect.bottom + 62);
-	m_settingsMenuRect = CRect(m_sideRect.left + 10, m_screenMenuRect.bottom + 10, m_sideRect.right - 10, m_screenMenuRect.bottom + 62);
+	m_batteryLogMenuRect = CRect(m_sideRect.left + 10, m_screenMenuRect.bottom + 10, m_sideRect.right - 10, m_screenMenuRect.bottom + 62);
+	m_powerLogMenuRect = CRect(m_sideRect.left + 10, m_batteryLogMenuRect.bottom + 10, m_sideRect.right - 10, m_batteryLogMenuRect.bottom + 62);
+	m_settingsMenuRect = CRect(m_sideRect.left + 10, m_powerLogMenuRect.bottom + 10, m_sideRect.right - 10, m_powerLogMenuRect.bottom + 62);
 }
 
 // 动态创建设置页复选框、按钮与状态文本控件。
@@ -5594,6 +5795,45 @@ void CMFCApplication1Dlg::CreateStartupControls()
 	LoadStartupItems();
 	UpdateStartupControlLayout();
 	UpdateStartupButtons();
+}
+
+void CMFCApplication1Dlg::CreatePowerLogControls()
+{
+	m_btnBatteryLogDetails.Create(_T("详情"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_BATTERY_LOG_DETAILS);
+	m_btnBatteryLogRefresh.Create(_T("刷新"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_BATTERY_LOG_REFRESH);
+	m_btnPowerLogDetails.Create(_T("详情"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_POWER_LOG_DETAILS);
+	m_btnPowerLogRefresh.Create(_T("刷新"), WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_POWER_LOG_REFRESH);
+	m_btnBatteryLogDetails.SetFont(&m_settingsFont);
+	m_btnBatteryLogRefresh.SetFont(&m_settingsFont);
+	m_btnPowerLogDetails.SetFont(&m_settingsFont);
+	m_btnPowerLogRefresh.SetFont(&m_settingsFont);
+	SetWindowTheme(m_btnBatteryLogDetails.GetSafeHwnd(), L"Explorer", nullptr);
+	SetWindowTheme(m_btnBatteryLogRefresh.GetSafeHwnd(), L"Explorer", nullptr);
+	SetWindowTheme(m_btnPowerLogDetails.GetSafeHwnd(), L"Explorer", nullptr);
+	SetWindowTheme(m_btnPowerLogRefresh.GetSafeHwnd(), L"Explorer", nullptr);
+	UpdatePowerLogControlLayout();
+}
+
+void CMFCApplication1Dlg::UpdatePowerLogControlLayout()
+{
+	if (!::IsWindow(m_btnBatteryLogDetails.GetSafeHwnd()) ||
+		!::IsWindow(m_btnBatteryLogRefresh.GetSafeHwnd()) ||
+		!::IsWindow(m_btnPowerLogDetails.GetSafeHwnd()) ||
+		!::IsWindow(m_btnPowerLogRefresh.GetSafeHwnd()))
+	{
+		return;
+	}
+
+	const CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
+	const int buttonWidth = 92;
+	const int buttonHeight = 36;
+	const int buttonGap = 10;
+	const int right = headerRect.right - 18;
+	const int top = headerRect.top + 30;
+	m_btnBatteryLogDetails.MoveWindow(right - buttonWidth, top, buttonWidth, buttonHeight, TRUE);
+	m_btnBatteryLogRefresh.MoveWindow(right - buttonWidth * 2 - buttonGap, top, buttonWidth, buttonHeight, TRUE);
+	m_btnPowerLogDetails.MoveWindow(right - buttonWidth, top, buttonWidth, buttonHeight, TRUE);
+	m_btnPowerLogRefresh.MoveWindow(right - buttonWidth * 2 - buttonGap, top, buttonWidth, buttonHeight, TRUE);
 }
 
 // 按当前 SSD 页几何参数更新页签控件位置。
@@ -6299,6 +6539,8 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	const bool showStatus = (m_activePage == PAGE_SYSTEM_STATUS);
 	const bool showStartup = (m_activePage == PAGE_STARTUP_ITEMS);
 	const bool showAcpi = (m_activePage == PAGE_ACPI_INFO);
+	const bool showBatteryLog = (m_activePage == PAGE_BATTERY_LOG);
+	const bool showPowerLog = (m_activePage == PAGE_POWER_LOG);
 	const int startupCmd = showStartup ? SW_SHOW : SW_HIDE;
 	for (CButton* checkBox : GetOptionCheckBoxes())
 	{
@@ -6338,6 +6580,14 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 		m_startupStatusText.ShowWindow(startupCmd);
 	}
 
+	if (::IsWindow(m_btnBatteryLogDetails.GetSafeHwnd()))
+	{
+		m_btnBatteryLogDetails.ShowWindow(showBatteryLog ? SW_SHOW : SW_HIDE);
+		m_btnBatteryLogRefresh.ShowWindow(showBatteryLog ? SW_SHOW : SW_HIDE);
+		m_btnPowerLogDetails.ShowWindow(showPowerLog ? SW_SHOW : SW_HIDE);
+		m_btnPowerLogRefresh.ShowWindow(showPowerLog ? SW_SHOW : SW_HIDE);
+	}
+
 	if (showSettings)
 	{
 		m_scrollPos = 0;
@@ -6366,6 +6616,11 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	else if (showAcpi)
 	{
 		m_scrollPos = 0;
+	}
+	else if (showBatteryLog || showPowerLog)
+	{
+		m_scrollPos = 0;
+		UpdatePowerLogControlLayout();
 	}
 }
 
@@ -6546,6 +6801,100 @@ void CMFCApplication1Dlg::OnBnClickedStartupAdd()
 	m_editStartupPath.SetWindowText(_T(""));
 	LoadStartupItems();
 	SetStartupStatusText(_T("启动项已添加到当前用户 Run。"));
+}
+
+void CMFCApplication1Dlg::OnBnClickedBatteryLogDetails()
+{
+	OpenPowerCfgReport(true);
+}
+
+void CMFCApplication1Dlg::OnBnClickedBatteryLogRefresh()
+{
+	RefreshPowerCfgReport(true);
+}
+
+void CMFCApplication1Dlg::OnBnClickedPowerLogDetails()
+{
+	OpenPowerCfgReport(false);
+}
+
+void CMFCApplication1Dlg::OnBnClickedPowerLogRefresh()
+{
+	RefreshPowerCfgReport(false);
+}
+
+void CMFCApplication1Dlg::EnsurePowerCfgReport(bool batteryReport)
+{
+	bool& loaded = batteryReport ? m_batteryLogLoaded : m_powerLogLoaded;
+	CString& reportPath = batteryReport ? m_batteryLogPath : m_powerLogPath;
+	std::vector<InfoRow>& rows = batteryReport ? m_batteryLogRows : m_powerLogRows;
+	if (loaded && !reportPath.IsEmpty() && PathFileExists(reportPath))
+	{
+		return;
+	}
+
+	reportPath = GetPowerCfgReportPath(batteryReport ? _T("SystemInspector-BatteryReport.html") : _T("SystemInspector-SleepStudy.html"));
+	rows.clear();
+	rows.push_back({ _T("状态"), _T("正在生成日志...") });
+	Invalidate();
+
+	CString args;
+	if (batteryReport)
+	{
+		args.Format(_T("/batteryreport /output \"%s\""), static_cast<LPCTSTR>(reportPath));
+	}
+	else
+	{
+		args.Format(_T("/sleepstudy /output \"%s\""), static_cast<LPCTSTR>(reportPath));
+	}
+
+	const bool ok = RunProcessAndWait(_T("powercfg.exe"), args, nullptr);
+	rows.clear();
+	loaded = true;
+
+	CFileStatus status = {};
+	if (ok && CFile::GetStatus(reportPath, status))
+	{
+		rows.push_back({ _T("状态"), _T("已生成") });
+		rows.push_back({ _T("导出工具"), batteryReport ? _T("powercfg /batteryreport") : _T("powercfg /sleepstudy") });
+		rows.push_back({ _T("日志文件"), reportPath });
+		rows.push_back({ _T("文件大小"), FormatFileSize(static_cast<ULONGLONG>(status.m_size)) });
+		rows.push_back({ _T("生成时间"), FormatFileTime(status.m_mtime) });
+		rows.push_back({ _T("操作"), _T("点击“详情”在浏览器中打开报告；点击“刷新”会覆盖当前目录下的同名 HTML 报告") });
+	}
+	else
+	{
+		rows.push_back({ _T("状态"), _T("生成失败") });
+		rows.push_back({ _T("导出工具"), batteryReport ? _T("powercfg /batteryreport") : _T("powercfg /sleepstudy") });
+		rows.push_back({ _T("日志文件"), reportPath });
+		rows.push_back({ _T("说明"), batteryReport ? _T("当前系统可能未提供电池，或 powercfg 未能生成电池报告。") : _T("当前系统可能不支持 Sleep Study，或 powercfg 未能生成睡眠研究报告。") });
+	}
+
+	Invalidate();
+}
+
+void CMFCApplication1Dlg::RefreshPowerCfgReport(bool batteryReport)
+{
+	bool& loaded = batteryReport ? m_batteryLogLoaded : m_powerLogLoaded;
+	loaded = false;
+	EnsurePowerCfgReport(batteryReport);
+}
+
+void CMFCApplication1Dlg::OpenPowerCfgReport(bool batteryReport)
+{
+	EnsurePowerCfgReport(batteryReport);
+	const CString& reportPath = batteryReport ? m_batteryLogPath : m_powerLogPath;
+	if (reportPath.IsEmpty() || !PathFileExists(reportPath))
+	{
+		AfxMessageBox(batteryReport ? _T("电池日志文件尚未生成。") : _T("电源日志文件尚未生成。"), MB_ICONWARNING | MB_OK);
+		return;
+	}
+
+	HINSTANCE result = ShellExecute(GetSafeHwnd(), _T("open"), reportPath, nullptr, nullptr, SW_SHOWNORMAL);
+	if (reinterpret_cast<INT_PTR>(result) <= 32)
+	{
+		AfxMessageBox(_T("无法打开日志文件，请检查默认浏览器或文件关联。"), MB_ICONERROR | MB_OK);
+	}
 }
 
 // 更新状态提示文字（颜色参数保留给后续扩展）。

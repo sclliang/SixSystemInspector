@@ -10,6 +10,8 @@
 // CMFCApplication1Dlg 对话框：负责系统信息展示与系统设置操作页面。
 class CMFCApplication1Dlg : public CDialogEx
 {
+	struct InfoRow;
+
 // 构造
 public:
 	// 构造主对话框对象并初始化基础状态。
@@ -79,6 +81,14 @@ protected:
 	afx_msg void OnBnClickedStartupBrowse();
 	// 处理启动项添加按钮点击。
 	afx_msg void OnBnClickedStartupAdd();
+	// 处理电池日志详情按钮点击。
+	afx_msg void OnBnClickedBatteryLogDetails();
+	// 处理电池日志刷新按钮点击。
+	afx_msg void OnBnClickedBatteryLogRefresh();
+	// 处理电源日志详情按钮点击。
+	afx_msg void OnBnClickedPowerLogDetails();
+	// 处理电源日志刷新按钮点击。
+	afx_msg void OnBnClickedPowerLogRefresh();
 	// 处理设置项勾选变化。
 	afx_msg void OnSettingsOptionChanged(UINT nID);
 	// 处理 SSD Tab 切换事件。
@@ -117,6 +127,8 @@ public:
 	void DrawAcpiInformation(CDC& dc, const CRect& clientRect);
 	// 绘制“系统设置”页面。
 	void DrawSystemSettings(CDC& dc, const CRect& clientRect);
+	// 绘制 powercfg 导出的日志报告页面。
+	void DrawPowerCfgReportPage(CDC& dc, const CRect& clientRect, const CString& title, const CString& subtitle, const std::vector<InfoRow>& rows);
 	// 读取并整理屏幕 EDID 详情。
 	void LoadScreenInformation();
 	// 将指定类别的信息导出为报告文件（命令行模式使用）。
@@ -137,6 +149,16 @@ public:
 	void CreateStartupControls();
 	// 更新启动项页控件位置与尺寸。
 	void UpdateStartupControlLayout();
+	// 动态创建 powercfg 日志页详情按钮。
+	void CreatePowerLogControls();
+	// 更新 powercfg 日志页详情按钮位置与尺寸。
+	void UpdatePowerLogControlLayout();
+	// 导出并刷新指定 powercfg 日志页面摘要。
+	void EnsurePowerCfgReport(bool batteryReport);
+	// 强制重新导出指定 powercfg 日志页面摘要。
+	void RefreshPowerCfgReport(bool batteryReport);
+	// 使用默认浏览器打开指定 powercfg 日志。
+	void OpenPowerCfgReport(bool batteryReport);
 	// 读取启动项并刷新列表。
 	void LoadStartupItems();
 	// 将启动项数据同步到列表控件。
@@ -285,12 +307,18 @@ private:
 	CRect m_settingsMenuRect;
 	CRect m_ssdMenuRect;
 	CRect m_screenMenuRect;
+	CRect m_batteryLogMenuRect;
+	CRect m_powerLogMenuRect;
 	CRect m_ssdTabRect;
 	int m_activeSsdIndex = 0;
 	bool m_ssdLoaded = false;
 	bool m_ssdLoading = false;
 	bool m_screenLoaded = false;
 	bool m_screenLoading = false;
+	bool m_batteryLogLoaded = false;
+	bool m_powerLogLoaded = false;
+	CString m_batteryLogPath;
+	CString m_powerLogPath;
 
 	// 设置页控件集合。
 	CButton m_chkUAC;
@@ -320,5 +348,11 @@ private:
 	CButton m_btnStartupBrowse;
 	CButton m_btnStartupAdd;
 	CStatic m_startupStatusText;
+	CButton m_btnBatteryLogDetails;
+	CButton m_btnBatteryLogRefresh;
+	CButton m_btnPowerLogDetails;
+	CButton m_btnPowerLogRefresh;
+	std::vector<InfoRow> m_batteryLogRows;
+	std::vector<InfoRow> m_powerLogRows;
 	std::vector<StartupItem> m_startupItems;
 };
