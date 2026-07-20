@@ -24,6 +24,7 @@
 #include <cwctype>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 #include <map>
 #include <set>
 #include <vector>
@@ -63,6 +64,12 @@ namespace
 	constexpr UINT WM_APP_APPLY_SYSTEM_INFO = WM_APP + 103;
 	constexpr UINT WM_APP_APPLY_SSD_INFO = WM_APP + 104;
 	constexpr UINT WM_APP_APPLY_SCREEN_INFO = WM_APP + 105;
+	constexpr UINT WM_APP_LOAD_SYSTEM_EXCEPTION_INFO = WM_APP + 106;
+	constexpr UINT WM_APP_APPLY_SYSTEM_EXCEPTION_INFO = WM_APP + 107;
+	constexpr UINT WM_APP_LOAD_BATTERY_LOG_INFO = WM_APP + 108;
+	constexpr UINT WM_APP_APPLY_BATTERY_LOG_INFO = WM_APP + 109;
+	constexpr UINT WM_APP_LOAD_POWER_LOG_INFO = WM_APP + 110;
+	constexpr UINT WM_APP_APPLY_POWER_LOG_INFO = WM_APP + 111;
 	constexpr int PAGE_SYSTEM_INFO = 0;
 	constexpr int PAGE_SYSTEM_SETTINGS = 1;
 	constexpr int PAGE_SSD_INFO = 2;
@@ -72,6 +79,7 @@ namespace
 	constexpr int PAGE_ACPI_INFO = 6;
 	constexpr int PAGE_BATTERY_LOG = 7;
 	constexpr int PAGE_POWER_LOG = 8;
+	constexpr int PAGE_SYSTEM_EXCEPTION = 9;
 	constexpr UINT IDC_CHK_UAC = 3001;
 	constexpr UINT IDC_CHK_FIREWALL = 3002;
 	constexpr UINT IDC_CHK_SEC_CENTER = 3003;
@@ -132,6 +140,9 @@ namespace
 	CString GetPowerCfgReportPath(const CString& fileName);
 	CString FormatFileSize(ULONGLONG bytes);
 	CString FormatFileTime(const CTime& time);
+	CString FormatWmiQueryTimeDaysAgo(int days);
+	CString ConfigManagerErrorText(const CString& code);
+	CString BuildSystemExceptionEventText(const std::vector<CString>& row);
 
 	void EnableWin11Chrome(HWND hwnd)
 	{
@@ -268,6 +279,91 @@ namespace
 	CString FormatFileTime(const CTime& time)
 	{
 		return time.Format(_T("%Y-%m-%d %H:%M:%S"));
+	}
+
+	CString FormatWmiQueryTimeDaysAgo(int days)
+	{
+		const CTime since = CTime::GetCurrentTime() - CTimeSpan(max(days, 1), 0, 0, 0);
+		TIME_ZONE_INFORMATION timeZone = {};
+		DWORD zoneId = GetTimeZoneInformation(&timeZone);
+		LONG bias = timeZone.Bias;
+		if (zoneId == TIME_ZONE_ID_DAYLIGHT)
+		{
+			bias += timeZone.DaylightBias;
+		}
+		else if (zoneId == TIME_ZONE_ID_STANDARD)
+		{
+			bias += timeZone.StandardBias;
+		}
+
+		const LONG offsetMinutes = -bias;
+		CString text;
+		text.Format(_T("%s.000000%c%03ld"),
+			since.Format(_T("%Y%m%d%H%M%S")).GetString(),
+			offsetMinutes >= 0 ? _T('+') : _T('-'),
+			labs(offsetMinutes));
+		return text;
+	}
+
+	CString ConfigManagerErrorText(const CString& code)
+	{
+		const int value = _ttoi(code);
+		switch (value)
+		{
+		case 1: return _T("设备配置不正确");
+		case 3: return _T("驱动程序可能已损坏或系统资源不足");
+		case 10: return _T("设备无法启动");
+		case 12: return _T("设备资源不足");
+		case 14: return _T("需要重启计算机");
+		case 18: return _T("需要重新安装驱动程序");
+		case 19: return _T("注册表配置信息不完整或损坏");
+		case 21: return _T("Windows 正在删除此设备");
+		case 22: return _T("设备已被禁用");
+		case 24: return _T("设备不存在、工作异常或驱动未安装");
+		case 28: return _T("未安装设备驱动程序");
+		case 31: return _T("设备驱动无法正常工作");
+		case 32: return _T("驱动服务已被禁用");
+		case 37: return _T("Windows 无法初始化设备驱动程序");
+		case 39: return _T("Windows 无法加载设备驱动程序");
+		case 43: return _T("设备报告问题，Windows 已停止该设备");
+		case 45: return _T("设备当前未连接到计算机");
+		case 48: return _T("驱动因存在问题已被阻止启动");
+		case 52: return _T("无法验证驱动程序的数字签名");
+		default:
+		{
+			CString text;
+			text.Format(_T("设备管理器错误码 %d"), value);
+			return text;
+		}
+		}
+	}
+
+	CString BuildSystemExceptionEventText(const std::vector<CString>& row)
+	{
+		CString timeText = row.size() > 0 ? FormatWmiDateTime(row[0]) : _T("");
+		CString source = row.size() > 2 ? row[2] : _T("");
+		CString type = row.size() > 3 ? row[3] : _T("");
+		CString message = row.size() > 4 ? row[4] : _T("");
+		CString recordNumber = row.size() > 5 ? row[5] : _T("");
+		CString category = row.size() > 6 ? row[6] : _T("");
+		CString user = row.size() > 7 ? row[7] : _T("");
+		CString computer = row.size() > 8 ? row[8] : _T("");
+
+		CString text;
+		if (HasValue(timeText)) text += _T("时间: ") + timeText + _T("\r\n");
+		if (HasValue(source)) text += _T("来源: ") + source + _T("\r\n");
+		if (HasValue(type)) text += _T("类型: ") + type + _T("\r\n");
+		if (HasValue(recordNumber)) text += _T("记录号: ") + recordNumber + _T("\r\n");
+		if (HasValue(category)) text += _T("类别: ") + category + _T("\r\n");
+		if (HasValue(user)) text += _T("用户: ") + user + _T("\r\n");
+		if (HasValue(computer)) text += _T("计算机: ") + computer + _T("\r\n");
+		if (HasValue(message))
+		{
+			text += _T("详细信息:\r\n");
+			text += message;
+		}
+		text.TrimRight();
+		return text;
 	}
 
 	// 判断是否为“通用显示器”这类无辨识度名称。
@@ -3410,9 +3506,15 @@ BEGIN_MESSAGE_MAP(CMFCApplication1Dlg, CDialogEx)
 	ON_MESSAGE(WM_APP_LOAD_SYSTEM_INFO, &CMFCApplication1Dlg::OnLoadSystemInformation)
 	ON_MESSAGE(WM_APP_LOAD_SSD_INFO, &CMFCApplication1Dlg::OnLoadSsdInformation)
 	ON_MESSAGE(WM_APP_LOAD_SCREEN_INFO, &CMFCApplication1Dlg::OnLoadScreenInformation)
+	ON_MESSAGE(WM_APP_LOAD_SYSTEM_EXCEPTION_INFO, &CMFCApplication1Dlg::OnLoadSystemExceptionInformation)
+	ON_MESSAGE(WM_APP_LOAD_BATTERY_LOG_INFO, &CMFCApplication1Dlg::OnLoadBatteryLogInformation)
+	ON_MESSAGE(WM_APP_LOAD_POWER_LOG_INFO, &CMFCApplication1Dlg::OnLoadPowerLogInformation)
 	ON_MESSAGE(WM_APP_APPLY_SYSTEM_INFO, &CMFCApplication1Dlg::OnApplyLoadedSystemInformation)
 	ON_MESSAGE(WM_APP_APPLY_SSD_INFO, &CMFCApplication1Dlg::OnApplyLoadedSsdInformation)
 	ON_MESSAGE(WM_APP_APPLY_SCREEN_INFO, &CMFCApplication1Dlg::OnApplyLoadedScreenInformation)
+	ON_MESSAGE(WM_APP_APPLY_SYSTEM_EXCEPTION_INFO, &CMFCApplication1Dlg::OnApplyLoadedSystemExceptionInformation)
+	ON_MESSAGE(WM_APP_APPLY_BATTERY_LOG_INFO, &CMFCApplication1Dlg::OnApplyLoadedBatteryLogInformation)
+	ON_MESSAGE(WM_APP_APPLY_POWER_LOG_INFO, &CMFCApplication1Dlg::OnApplyLoadedPowerLogInformation)
 	ON_BN_CLICKED(IDC_BTN_APPLY_SETTINGS, &CMFCApplication1Dlg::OnBnClickedApplySettings)
 	ON_BN_CLICKED(IDC_BTN_REBOOT, &CMFCApplication1Dlg::OnBnClickedRebootSystem)
 	ON_BN_CLICKED(IDC_BTN_TOGGLE_SELECT, &CMFCApplication1Dlg::OnBnClickedToggleSelect)
@@ -3557,6 +3659,25 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 			Invalidate();
 		}
 	}
+	else if (m_exceptionMenuRect.PtInRect(point))
+	{
+		if (m_activePage != PAGE_SYSTEM_EXCEPTION)
+		{
+			m_activePage = PAGE_SYSTEM_EXCEPTION;
+			UpdatePageVisibility();
+			Invalidate();
+		}
+
+		if (!m_systemExceptionLoaded && !m_systemExceptionLoading)
+		{
+			m_systemExceptionLoading = true;
+			m_systemExceptionRows.clear();
+			m_systemExceptionRows.push_back({ _T("状态"), _T("系统异常信息加载中...") });
+			m_scrollPos = 0;
+			Invalidate();
+			PostMessage(WM_APP_LOAD_SYSTEM_EXCEPTION_INFO, 0, 0);
+		}
+	}
 	else if (m_startupMenuRect.PtInRect(point))
 	{
 		if (m_activePage != PAGE_STARTUP_ITEMS)
@@ -3623,7 +3744,6 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 		{
 			m_activePage = PAGE_BATTERY_LOG;
 			UpdatePageVisibility();
-			EnsurePowerCfgReport(true);
 			Invalidate();
 		}
 	}
@@ -3633,7 +3753,6 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 		{
 			m_activePage = PAGE_POWER_LOG;
 			UpdatePageVisibility();
-			EnsurePowerCfgReport(false);
 			Invalidate();
 		}
 	}
@@ -3646,6 +3765,7 @@ void CMFCApplication1Dlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 {
 	if (m_activePage != PAGE_SYSTEM_INFO &&
 		m_activePage != PAGE_SYSTEM_STATUS &&
+		m_activePage != PAGE_SYSTEM_EXCEPTION &&
 		m_activePage != PAGE_ACPI_INFO &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
@@ -3718,6 +3838,7 @@ BOOL CMFCApplication1Dlg::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
 {
 	if (m_activePage != PAGE_SYSTEM_INFO &&
 		m_activePage != PAGE_SYSTEM_STATUS &&
+		m_activePage != PAGE_SYSTEM_EXCEPTION &&
 		m_activePage != PAGE_ACPI_INFO &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
@@ -3842,6 +3963,53 @@ LRESULT CMFCApplication1Dlg::OnLoadScreenInformation(WPARAM wParam, LPARAM lPara
 	return 0;
 }
 
+LRESULT CMFCApplication1Dlg::OnLoadSystemExceptionInformation(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(wParam);
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadRequest* request = new AsyncLoadRequest;
+	request->targetHwnd = GetSafeHwnd();
+	if (AfxBeginThread(&CMFCApplication1Dlg::LoadSystemExceptionInformationThread, request) == nullptr)
+	{
+		delete request;
+		m_systemExceptionLoading = false;
+		Invalidate();
+	}
+	return 0;
+}
+
+LRESULT CMFCApplication1Dlg::OnLoadBatteryLogInformation(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(wParam);
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadRequest* request = new AsyncLoadRequest;
+	request->targetHwnd = GetSafeHwnd();
+	request->batteryReport = true;
+	if (AfxBeginThread(&CMFCApplication1Dlg::LoadBatteryLogInformationThread, request) == nullptr)
+	{
+		delete request;
+		m_batteryLogLoading = false;
+		Invalidate();
+	}
+	return 0;
+}
+
+LRESULT CMFCApplication1Dlg::OnLoadPowerLogInformation(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(wParam);
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadRequest* request = new AsyncLoadRequest;
+	request->targetHwnd = GetSafeHwnd();
+	request->batteryReport = false;
+	if (AfxBeginThread(&CMFCApplication1Dlg::LoadPowerLogInformationThread, request) == nullptr)
+	{
+		delete request;
+		m_powerLogLoading = false;
+		Invalidate();
+	}
+	return 0;
+}
+
 LRESULT CMFCApplication1Dlg::OnApplyLoadedSystemInformation(WPARAM wParam, LPARAM lParam)
 {
 	UNREFERENCED_PARAMETER(lParam);
@@ -3861,6 +4029,7 @@ LRESULT CMFCApplication1Dlg::OnApplyLoadedSystemInformation(WPARAM wParam, LPARA
 	}
 	delete result;
 	Invalidate();
+	StartSilentPreload();
 	return 0;
 }
 
@@ -3901,6 +4070,68 @@ LRESULT CMFCApplication1Dlg::OnApplyLoadedScreenInformation(WPARAM wParam, LPARA
 	m_screenLoaded = true;
 	m_screenLoading = false;
 	m_scrollPos = 0;
+	delete result;
+	Invalidate();
+	return 0;
+}
+
+LRESULT CMFCApplication1Dlg::OnApplyLoadedSystemExceptionInformation(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadResult* result = reinterpret_cast<AsyncLoadResult*>(wParam);
+	if (result == nullptr)
+	{
+		return 0;
+	}
+
+	m_systemExceptionRows = result->systemExceptionRows;
+	m_systemExceptionLoaded = true;
+	m_systemExceptionLoading = false;
+	m_scrollPos = 0;
+	delete result;
+	Invalidate();
+	return 0;
+}
+
+LRESULT CMFCApplication1Dlg::OnApplyLoadedBatteryLogInformation(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadResult* result = reinterpret_cast<AsyncLoadResult*>(wParam);
+	if (result == nullptr)
+	{
+		return 0;
+	}
+
+	m_batteryLogRows = result->batteryLogRows;
+	m_batteryLogPath = result->batteryLogPath;
+	m_batteryLogLoaded = true;
+	m_batteryLogLoading = false;
+	if (m_activePage == PAGE_BATTERY_LOG)
+	{
+		m_scrollPos = 0;
+	}
+	delete result;
+	Invalidate();
+	return 0;
+}
+
+LRESULT CMFCApplication1Dlg::OnApplyLoadedPowerLogInformation(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadResult* result = reinterpret_cast<AsyncLoadResult*>(wParam);
+	if (result == nullptr)
+	{
+		return 0;
+	}
+
+	m_powerLogRows = result->powerLogRows;
+	m_powerLogPath = result->powerLogPath;
+	m_powerLogLoaded = true;
+	m_powerLogLoading = false;
+	if (m_activePage == PAGE_POWER_LOG)
+	{
+		m_scrollPos = 0;
+	}
 	delete result;
 	Invalidate();
 	return 0;
@@ -3962,6 +4193,53 @@ UINT CMFCApplication1Dlg::LoadScreenInformationThread(LPVOID parameter)
 	AsyncLoadResult* result = new AsyncLoadResult;
 	result->screenRows = loader.m_screenRows;
 	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_SCREEN_INFO, result);
+	return 0;
+}
+
+UINT CMFCApplication1Dlg::LoadSystemExceptionInformationThread(LPVOID parameter)
+{
+	AsyncLoadRequest* request = reinterpret_cast<AsyncLoadRequest*>(parameter);
+	const HWND targetHwnd = request != nullptr ? request->targetHwnd : nullptr;
+	delete request;
+
+	CMFCApplication1Dlg loader;
+	loader.LoadSystemExceptionInformation();
+
+	AsyncLoadResult* result = new AsyncLoadResult;
+	result->systemExceptionRows = loader.m_systemExceptionRows;
+	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_SYSTEM_EXCEPTION_INFO, result);
+	return 0;
+}
+
+UINT CMFCApplication1Dlg::LoadBatteryLogInformationThread(LPVOID parameter)
+{
+	AsyncLoadRequest* request = reinterpret_cast<AsyncLoadRequest*>(parameter);
+	const HWND targetHwnd = request != nullptr ? request->targetHwnd : nullptr;
+	delete request;
+
+	CMFCApplication1Dlg loader;
+	loader.LoadPowerCfgReportInformation(true);
+
+	AsyncLoadResult* result = new AsyncLoadResult;
+	result->batteryLogRows = loader.m_batteryLogRows;
+	result->batteryLogPath = loader.m_batteryLogPath;
+	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_BATTERY_LOG_INFO, result);
+	return 0;
+}
+
+UINT CMFCApplication1Dlg::LoadPowerLogInformationThread(LPVOID parameter)
+{
+	AsyncLoadRequest* request = reinterpret_cast<AsyncLoadRequest*>(parameter);
+	const HWND targetHwnd = request != nullptr ? request->targetHwnd : nullptr;
+	delete request;
+
+	CMFCApplication1Dlg loader;
+	loader.LoadPowerCfgReportInformation(false);
+
+	AsyncLoadResult* result = new AsyncLoadResult;
+	result->powerLogRows = loader.m_powerLogRows;
+	result->powerLogPath = loader.m_powerLogPath;
+	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_POWER_LOG_INFO, result);
 	return 0;
 }
 
@@ -4068,6 +4346,108 @@ bool CMFCApplication1Dlg::ExportReportToFile(const CString& reportType, const CS
 	}
 
 	return WriteUtf8TextFile(targetPath, reportText, errorMessage);
+}
+
+void CMFCApplication1Dlg::LoadSystemExceptionInformation()
+{
+	const bool hasWindow = ::IsWindow(GetSafeHwnd());
+	m_systemExceptionRows.clear();
+	m_systemExceptionLoaded = false;
+
+	auto addSystemExceptionRow = [this](const CString& item, const CString& value)
+		{
+			m_systemExceptionRows.push_back({ item, HasValue(value) ? NormalizeMultilineValue(value) : _T("N/A") });
+		};
+
+	const auto abnormalDeviceRows = QueryWmiRows(
+		_T("ROOT\\CIMV2"),
+		_T("SELECT Name, Manufacturer, Service, PNPClass, DeviceID, ConfigManagerErrorCode, Status, ErrorDescription FROM Win32_PnPEntity WHERE ConfigManagerErrorCode <> 0"),
+		{ _T("Name"), _T("Manufacturer"), _T("Service"), _T("PNPClass"), _T("DeviceID"), _T("ConfigManagerErrorCode"), _T("Status"), _T("ErrorDescription") });
+	if (abnormalDeviceRows.empty())
+	{
+		addSystemExceptionRow(_T("异常驱动"), _T("未发现设备管理器异常驱动/设备"));
+	}
+	else
+	{
+		addSystemExceptionRow(_T("异常驱动数量"), [&abnormalDeviceRows]() {
+			CString count;
+			count.Format(_T("%u"), static_cast<unsigned>(abnormalDeviceRows.size()));
+			return count;
+			}());
+		for (size_t i = 0; i < abnormalDeviceRows.size(); ++i)
+		{
+			const auto& row = abnormalDeviceRows[i];
+			CString details;
+			details += _T("名称: ") + (row.size() > 0 && HasValue(row[0]) ? row[0] : _T("N/A"));
+			if (row.size() > 1 && HasValue(row[1])) details += _T("\r\n厂商: ") + row[1];
+			if (row.size() > 2 && HasValue(row[2])) details += _T("\r\n服务: ") + row[2];
+			if (row.size() > 3 && HasValue(row[3])) details += _T("\r\n类别: ") + row[3];
+			if (row.size() > 5 && HasValue(row[5])) details += _T("\r\n错误码: ") + row[5] + _T(" - ") + ConfigManagerErrorText(row[5]);
+			if (row.size() > 6 && HasValue(row[6])) details += _T("\r\n状态: ") + row[6];
+			if (row.size() > 7 && HasValue(row[7])) details += _T("\r\n错误描述: ") + row[7];
+			if (row.size() > 4 && HasValue(row[4])) details += _T("\r\n设备ID: ") + row[4];
+			CString label;
+			label.Format(_T("异常驱动[%u]"), static_cast<unsigned>(i + 1));
+			addSystemExceptionRow(label, details);
+		}
+	}
+
+	const int eventLookbackDays = 30;
+	const CString sinceTime = FormatWmiQueryTimeDaysAgo(eventLookbackDays);
+	CString eventWql;
+	eventWql.Format(
+		_T("SELECT TimeGenerated, EventCode, SourceName, Type, Message, RecordNumber, CategoryString, User, ComputerName FROM Win32_NTLogEvent WHERE Logfile = 'System' AND TimeGenerated >= '%s' AND ((EventCode = '1001' AND SourceName = 'Microsoft-Windows-WER-SystemErrorReporting') OR (EventCode = '1003' AND SourceName = 'System Error') OR (EventCode = '41' AND (SourceName = 'System Error' OR SourceName = 'Microsoft-Windows-Kernel-Power')))"),
+		static_cast<LPCTSTR>(sinceTime));
+
+	auto exceptionEventRows = QueryWmiRows(
+		_T("ROOT\\CIMV2"),
+		eventWql,
+		{ _T("TimeGenerated"), _T("EventCode"), _T("SourceName"), _T("Type"), _T("Message"), _T("RecordNumber"), _T("CategoryString"), _T("User"), _T("ComputerName") });
+	std::sort(exceptionEventRows.begin(), exceptionEventRows.end(), [](const std::vector<CString>& left, const std::vector<CString>& right) {
+		const CString leftTime = left.empty() ? _T("") : left[0];
+		const CString rightTime = right.empty() ? _T("") : right[0];
+		return leftTime.Compare(rightTime) > 0;
+		});
+	if (exceptionEventRows.empty())
+	{
+		CString note;
+		note.Format(_T("最近 %d 天未发现匹配的 System 重大异常事件"), eventLookbackDays);
+		addSystemExceptionRow(_T("重大异常日志"), note);
+	}
+	else
+	{
+		CString rangeText;
+		rangeText.Format(_T("最近 %d 天，共匹配 %u 条，显示最近的前 12 条。"), eventLookbackDays, static_cast<unsigned>(exceptionEventRows.size()));
+		addSystemExceptionRow(_T("日志查询范围"), rangeText);
+		size_t shown = 0;
+		for (const auto& row : exceptionEventRows)
+		{
+			if (shown >= 12)
+			{
+				break;
+			}
+			CString label;
+			label.Format(_T("事件 %s [%u]"),
+				row.size() > 1 && HasValue(row[1]) ? row[1].GetString() : _T("N/A"),
+				static_cast<unsigned>(shown + 1));
+			addSystemExceptionRow(label, BuildSystemExceptionEventText(row));
+			++shown;
+		}
+		if (exceptionEventRows.size() > shown)
+		{
+			CString note;
+			note.Format(_T("共匹配 %u 条，当前显示最近采集到的前 %u 条。"), static_cast<unsigned>(exceptionEventRows.size()), static_cast<unsigned>(shown));
+			addSystemExceptionRow(_T("日志显示范围"), note);
+		}
+	}
+
+	m_systemExceptionLoaded = true;
+	m_systemExceptionLoading = false;
+	m_scrollPos = 0;
+	if (hasWindow)
+	{
+		Invalidate();
+	}
 }
 
 void CMFCApplication1Dlg::LoadScreenInformation()
@@ -4855,6 +5235,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 
 	DrawRoundedCard(memDc, m_infoMenuRect, m_activePage == PAGE_SYSTEM_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_statusMenuRect, m_activePage == PAGE_SYSTEM_STATUS ? selectedColor : unselectedColor, 10);
+	DrawRoundedCard(memDc, m_exceptionMenuRect, m_activePage == PAGE_SYSTEM_EXCEPTION ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_startupMenuRect, m_activePage == PAGE_STARTUP_ITEMS ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_acpiMenuRect, m_activePage == PAGE_ACPI_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_settingsMenuRect, m_activePage == PAGE_SYSTEM_SETTINGS ? selectedColor : unselectedColor, 10);
@@ -4865,6 +5246,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 
 	if (m_activePage == PAGE_SYSTEM_INFO) DrawAccentStrip(memDc, m_infoMenuRect, UiAccent);
 	if (m_activePage == PAGE_SYSTEM_STATUS) DrawAccentStrip(memDc, m_statusMenuRect, UiAccent);
+	if (m_activePage == PAGE_SYSTEM_EXCEPTION) DrawAccentStrip(memDc, m_exceptionMenuRect, UiAccent);
 	if (m_activePage == PAGE_STARTUP_ITEMS) DrawAccentStrip(memDc, m_startupMenuRect, UiAccent);
 	if (m_activePage == PAGE_ACPI_INFO) DrawAccentStrip(memDc, m_acpiMenuRect, UiAccent);
 	if (m_activePage == PAGE_SYSTEM_SETTINGS) DrawAccentStrip(memDc, m_settingsMenuRect, UiAccent);
@@ -4889,6 +5271,11 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	menuTextRect.right -= 12;
 	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_STATUS ? UiText : UiSecondaryText);
 	memDc.DrawText(_T("系统状态"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_exceptionMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_EXCEPTION ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("系统异常"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 	menuTextRect = m_startupMenuRect;
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
@@ -4932,6 +5319,10 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	else if (m_activePage == PAGE_SYSTEM_STATUS)
 	{
 		DrawSystemStatus(memDc, clientRect);
+	}
+	else if (m_activePage == PAGE_SYSTEM_EXCEPTION)
+	{
+		DrawSystemExceptionInformation(memDc, clientRect);
 	}
 	else if (m_activePage == PAGE_STARTUP_ITEMS)
 	{
@@ -5434,6 +5825,104 @@ void CMFCApplication1Dlg::DrawSystemStatus(CDC& dc, const CRect& clientRect)
 	dc.RestoreDC(oldDc);
 }
 
+void CMFCApplication1Dlg::DrawSystemExceptionInformation(CDC& dc, const CRect& clientRect)
+{
+	UNREFERENCED_PARAMETER(clientRect);
+
+	CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
+	CRect listRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
+	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
+	DrawRoundedCard(dc, listRect, UiSurface, 12, UiBorder);
+
+	dc.SelectObject(&m_titleFont);
+	dc.SetTextColor(UiText);
+	CRect titleRect(headerRect.left + 18, headerRect.top + 10, headerRect.right - 16, headerRect.top + 42);
+	dc.DrawText(_T("系统异常"), titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+	dc.SelectObject(&m_subtitleFont);
+	dc.SetTextColor(UiSecondaryText);
+	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 16, headerRect.bottom - 8);
+	dc.DrawText(_T("查看异常驱动信息，以及 System 日志中的 WER/System Error/Kernel-Power 重大异常事件"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+	const int labelX = listRect.left + 16;
+	const int labelWidth = 178;
+	const int valueX = labelX + labelWidth + 34;
+	const int contentTop = listRect.top + 14;
+	const int contentBottom = listRect.bottom - 12;
+	const int contentWidth = (listRect.right - 16) - valueX;
+	const int valueRight = valueX + contentWidth;
+
+	TEXTMETRIC labelTm = {};
+	dc.SelectObject(&m_labelFont);
+	dc.GetTextMetrics(&labelTm);
+	const int labelLineHeight = max(static_cast<int>(labelTm.tmHeight + labelTm.tmExternalLeading), 24);
+
+	TEXTMETRIC valueTm = {};
+	dc.SelectObject(&m_valueFont);
+	dc.GetTextMetrics(&valueTm);
+	const int valueLineHeight = max(static_cast<int>(valueTm.tmHeight + valueTm.tmExternalLeading), 24);
+	const int rowPadding = 8;
+	const int rowGap = 10;
+
+	std::vector<int> rowHeights;
+	rowHeights.reserve(m_systemExceptionRows.size());
+	int totalHeight = 14;
+	for (const InfoRow& row : m_systemExceptionRows)
+	{
+		CRect calcRect(0, 0, max(contentWidth, 80), 0);
+		dc.SelectObject(&m_valueFont);
+		dc.DrawText(row.value, calcRect, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+		const int valueHeight = max(valueLineHeight, calcRect.Height());
+		const int rowHeight = max(labelLineHeight, valueHeight) + rowPadding;
+		rowHeights.push_back(rowHeight);
+		totalHeight += rowHeight + rowGap;
+	}
+	totalHeight += 10;
+	UpdateVerticalScrollBar(totalHeight, max(1, listRect.Height() - 4));
+
+	int y = contentTop - m_scrollPos;
+	const int oldDc = dc.SaveDC();
+	dc.IntersectClipRect(listRect.left + 6, listRect.top + 6, listRect.right - 6, listRect.bottom - 6);
+
+	if (m_systemExceptionRows.empty())
+	{
+		dc.SelectObject(&m_valueFont);
+		dc.SetTextColor(UiSecondaryText);
+		dc.TextOutW(labelX, y, _T("正在加载系统异常信息，请稍候..."));
+	}
+	else
+	{
+		for (size_t i = 0; i < m_systemExceptionRows.size(); ++i)
+		{
+			const InfoRow& row = m_systemExceptionRows[i];
+			const int rowHeight = i < rowHeights.size() ? rowHeights[i] : (labelLineHeight + rowPadding);
+			dc.SelectObject(&m_labelFont);
+			dc.SetTextColor(UiTertiaryText);
+			CRect labelRect(labelX, y, labelX + labelWidth, y + rowHeight);
+			dc.DrawText(row.item, labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+			dc.SelectObject(&m_valueFont);
+			dc.SetTextColor(UiText);
+			CRect valueRect(valueX, y + 1, valueRight, y + rowHeight);
+			dc.DrawText(row.value, valueRect, DT_LEFT | DT_WORDBREAK);
+
+			CPen linePen(PS_SOLID, 1, UiBorder);
+			CPen* oldLinePen = dc.SelectObject(&linePen);
+			const int separatorY = y + rowHeight + (rowGap / 2);
+			dc.MoveTo(labelX, separatorY);
+			dc.LineTo(valueRight, separatorY);
+			dc.SelectObject(oldLinePen);
+
+			y += rowHeight + rowGap;
+			if (y > contentBottom + 20)
+			{
+				break;
+			}
+		}
+	}
+	dc.RestoreDC(oldDc);
+}
+
 void CMFCApplication1Dlg::DrawStartupItems(CDC& dc, const CRect& clientRect)
 {
 	UNREFERENCED_PARAMETER(clientRect);
@@ -5688,7 +6177,8 @@ void CMFCApplication1Dlg::RecalcLayoutRects(const CRect& clientRect)
 	m_contentRect = CRect(m_sideRect.right + 12, margin, clientRect.right - margin, clientRect.bottom - margin);
 	m_infoMenuRect = CRect(m_sideRect.left + 10, m_sideRect.top + 54, m_sideRect.right - 10, m_sideRect.top + 102);
 	m_statusMenuRect = CRect(m_sideRect.left + 10, m_infoMenuRect.bottom + 10, m_sideRect.right - 10, m_infoMenuRect.bottom + 62);
-	m_startupMenuRect = CRect(m_sideRect.left + 10, m_statusMenuRect.bottom + 10, m_sideRect.right - 10, m_statusMenuRect.bottom + 62);
+	m_exceptionMenuRect = CRect(m_sideRect.left + 10, m_statusMenuRect.bottom + 10, m_sideRect.right - 10, m_statusMenuRect.bottom + 62);
+	m_startupMenuRect = CRect(m_sideRect.left + 10, m_exceptionMenuRect.bottom + 10, m_sideRect.right - 10, m_exceptionMenuRect.bottom + 62);
 	m_acpiMenuRect = CRect(m_sideRect.left + 10, m_startupMenuRect.bottom + 10, m_sideRect.right - 10, m_startupMenuRect.bottom + 62);
 	m_ssdMenuRect = CRect(m_sideRect.left + 10, m_acpiMenuRect.bottom + 10, m_sideRect.right - 10, m_acpiMenuRect.bottom + 62);
 	m_screenMenuRect = CRect(m_sideRect.left + 10, m_ssdMenuRect.bottom + 10, m_sideRect.right - 10, m_ssdMenuRect.bottom + 62);
@@ -6537,6 +7027,7 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	const bool showSsd = (m_activePage == PAGE_SSD_INFO);
 	const bool showScreen = (m_activePage == PAGE_SCREEN_INFO);
 	const bool showStatus = (m_activePage == PAGE_SYSTEM_STATUS);
+	const bool showException = (m_activePage == PAGE_SYSTEM_EXCEPTION);
 	const bool showStartup = (m_activePage == PAGE_STARTUP_ITEMS);
 	const bool showAcpi = (m_activePage == PAGE_ACPI_INFO);
 	const bool showBatteryLog = (m_activePage == PAGE_BATTERY_LOG);
@@ -6607,6 +7098,17 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	{
 		m_scrollPos = 0;
 	}
+	else if (showException)
+	{
+		m_scrollPos = 0;
+		if (!m_systemExceptionLoaded && !m_systemExceptionLoading)
+		{
+			m_systemExceptionLoading = true;
+			m_systemExceptionRows.clear();
+			m_systemExceptionRows.push_back({ _T("状态"), _T("系统异常信息加载中...") });
+			PostMessage(WM_APP_LOAD_SYSTEM_EXCEPTION_INFO, 0, 0);
+		}
+	}
 	else if (showStartup)
 	{
 		m_scrollPos = 0;
@@ -6621,6 +7123,20 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	{
 		m_scrollPos = 0;
 		UpdatePowerLogControlLayout();
+		if (showBatteryLog && !m_batteryLogLoaded && !m_batteryLogLoading)
+		{
+			m_batteryLogLoading = true;
+			m_batteryLogRows.clear();
+			m_batteryLogRows.push_back({ _T("状态"), _T("电池日志生成中...") });
+			PostMessage(WM_APP_LOAD_BATTERY_LOG_INFO, 0, 0);
+		}
+		if (showPowerLog && !m_powerLogLoaded && !m_powerLogLoading)
+		{
+			m_powerLogLoading = true;
+			m_powerLogRows.clear();
+			m_powerLogRows.push_back({ _T("状态"), _T("电源日志生成中...") });
+			PostMessage(WM_APP_LOAD_POWER_LOG_INFO, 0, 0);
+		}
 	}
 }
 
@@ -6827,16 +7343,23 @@ void CMFCApplication1Dlg::EnsurePowerCfgReport(bool batteryReport)
 {
 	bool& loaded = batteryReport ? m_batteryLogLoaded : m_powerLogLoaded;
 	CString& reportPath = batteryReport ? m_batteryLogPath : m_powerLogPath;
-	std::vector<InfoRow>& rows = batteryReport ? m_batteryLogRows : m_powerLogRows;
 	if (loaded && !reportPath.IsEmpty() && PathFileExists(reportPath))
 	{
 		return;
 	}
 
+	LoadPowerCfgReportInformation(batteryReport);
+	Invalidate();
+}
+
+void CMFCApplication1Dlg::LoadPowerCfgReportInformation(bool batteryReport)
+{
+	bool& loaded = batteryReport ? m_batteryLogLoaded : m_powerLogLoaded;
+	CString& reportPath = batteryReport ? m_batteryLogPath : m_powerLogPath;
+	std::vector<InfoRow>& rows = batteryReport ? m_batteryLogRows : m_powerLogRows;
 	reportPath = GetPowerCfgReportPath(batteryReport ? _T("SystemInspector-BatteryReport.html") : _T("SystemInspector-SleepStudy.html"));
 	rows.clear();
 	rows.push_back({ _T("状态"), _T("正在生成日志...") });
-	Invalidate();
 
 	CString args;
 	if (batteryReport)
@@ -6869,19 +7392,82 @@ void CMFCApplication1Dlg::EnsurePowerCfgReport(bool batteryReport)
 		rows.push_back({ _T("日志文件"), reportPath });
 		rows.push_back({ _T("说明"), batteryReport ? _T("当前系统可能未提供电池，或 powercfg 未能生成电池报告。") : _T("当前系统可能不支持 Sleep Study，或 powercfg 未能生成睡眠研究报告。") });
 	}
-
-	Invalidate();
 }
 
 void CMFCApplication1Dlg::RefreshPowerCfgReport(bool batteryReport)
 {
 	bool& loaded = batteryReport ? m_batteryLogLoaded : m_powerLogLoaded;
+	bool& loading = batteryReport ? m_batteryLogLoading : m_powerLogLoading;
+	std::vector<InfoRow>& rows = batteryReport ? m_batteryLogRows : m_powerLogRows;
 	loaded = false;
-	EnsurePowerCfgReport(batteryReport);
+	if (loading)
+	{
+		return;
+	}
+	loading = true;
+	rows.clear();
+	rows.push_back({ _T("状态"), _T("正在刷新日志...") });
+	PostMessage(batteryReport ? WM_APP_LOAD_BATTERY_LOG_INFO : WM_APP_LOAD_POWER_LOG_INFO, 0, 0);
+	Invalidate();
+}
+
+void CMFCApplication1Dlg::StartSilentPreload()
+{
+	if (m_silentPreloadStarted)
+	{
+		return;
+	}
+	m_silentPreloadStarted = true;
+
+	if (!m_ssdLoaded && !m_ssdLoading)
+	{
+		m_ssdLoading = true;
+		m_ssdDiskRows.clear();
+		m_ssdTabTitles.clear();
+		m_ssdDiskRows.push_back({ { _T("状态"), _T("SSD信息后台加载中...") } });
+		m_ssdTabTitles.push_back(_T("加载中"));
+		m_ssdRows = m_ssdDiskRows.front();
+		PostMessage(WM_APP_LOAD_SSD_INFO, 0, 0);
+	}
+	if (!m_screenLoaded && !m_screenLoading)
+	{
+		m_screenLoading = true;
+		m_screenRows.clear();
+		m_screenRows.push_back({ _T("状态"), _T("屏幕详情后台加载中...") });
+		PostMessage(WM_APP_LOAD_SCREEN_INFO, 0, 0);
+	}
+	if (!m_systemExceptionLoaded && !m_systemExceptionLoading)
+	{
+		m_systemExceptionLoading = true;
+		m_systemExceptionRows.clear();
+		m_systemExceptionRows.push_back({ _T("状态"), _T("系统异常信息后台加载中...") });
+		PostMessage(WM_APP_LOAD_SYSTEM_EXCEPTION_INFO, 0, 0);
+	}
+	if (!m_batteryLogLoaded && !m_batteryLogLoading)
+	{
+		m_batteryLogLoading = true;
+		m_batteryLogRows.clear();
+		m_batteryLogRows.push_back({ _T("状态"), _T("电池日志后台生成中...") });
+		PostMessage(WM_APP_LOAD_BATTERY_LOG_INFO, 0, 0);
+	}
+	if (!m_powerLogLoaded && !m_powerLogLoading)
+	{
+		m_powerLogLoading = true;
+		m_powerLogRows.clear();
+		m_powerLogRows.push_back({ _T("状态"), _T("电源日志后台生成中...") });
+		PostMessage(WM_APP_LOAD_POWER_LOG_INFO, 0, 0);
+	}
 }
 
 void CMFCApplication1Dlg::OpenPowerCfgReport(bool batteryReport)
 {
+	const bool loading = batteryReport ? m_batteryLogLoading : m_powerLogLoading;
+	if (loading)
+	{
+		AfxMessageBox(batteryReport ? _T("电池日志正在生成，请稍后再打开。") : _T("电源日志正在生成，请稍后再打开。"), MB_ICONINFORMATION | MB_OK);
+		return;
+	}
+
 	EnsurePowerCfgReport(batteryReport);
 	const CString& reportPath = batteryReport ? m_batteryLogPath : m_powerLogPath;
 	if (reportPath.IsEmpty() || !PathFileExists(reportPath))

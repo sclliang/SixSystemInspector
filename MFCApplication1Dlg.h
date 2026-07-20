@@ -55,12 +55,24 @@ protected:
 	afx_msg LRESULT OnLoadSsdInformation(WPARAM wParam, LPARAM lParam);
 	// 处理异步加载屏幕详情消息。
 	afx_msg LRESULT OnLoadScreenInformation(WPARAM wParam, LPARAM lParam);
+	// 处理异步加载系统异常消息。
+	afx_msg LRESULT OnLoadSystemExceptionInformation(WPARAM wParam, LPARAM lParam);
+	// 处理异步加载电池日志消息。
+	afx_msg LRESULT OnLoadBatteryLogInformation(WPARAM wParam, LPARAM lParam);
+	// 处理异步加载电源日志消息。
+	afx_msg LRESULT OnLoadPowerLogInformation(WPARAM wParam, LPARAM lParam);
 	// 接收后台线程完成后的系统信息结果。
 	afx_msg LRESULT OnApplyLoadedSystemInformation(WPARAM wParam, LPARAM lParam);
 	// 接收后台线程完成后的 SSD 信息结果。
 	afx_msg LRESULT OnApplyLoadedSsdInformation(WPARAM wParam, LPARAM lParam);
 	// 接收后台线程完成后的屏幕详情结果。
 	afx_msg LRESULT OnApplyLoadedScreenInformation(WPARAM wParam, LPARAM lParam);
+	// 接收后台线程完成后的系统异常结果。
+	afx_msg LRESULT OnApplyLoadedSystemExceptionInformation(WPARAM wParam, LPARAM lParam);
+	// 接收后台线程完成后的电池日志结果。
+	afx_msg LRESULT OnApplyLoadedBatteryLogInformation(WPARAM wParam, LPARAM lParam);
+	// 接收后台线程完成后的电源日志结果。
+	afx_msg LRESULT OnApplyLoadedPowerLogInformation(WPARAM wParam, LPARAM lParam);
 	// 处理控件颜色与背景刷设置。
 	afx_msg HBRUSH OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor);
 	// 处理“应用设置”按钮点击。
@@ -125,12 +137,16 @@ public:
 	void DrawStartupItems(CDC& dc, const CRect& clientRect);
 	// 绘制“硬件详情”页面。
 	void DrawAcpiInformation(CDC& dc, const CRect& clientRect);
+	// 绘制“系统异常”页面。
+	void DrawSystemExceptionInformation(CDC& dc, const CRect& clientRect);
 	// 绘制“系统设置”页面。
 	void DrawSystemSettings(CDC& dc, const CRect& clientRect);
 	// 绘制 powercfg 导出的日志报告页面。
 	void DrawPowerCfgReportPage(CDC& dc, const CRect& clientRect, const CString& title, const CString& subtitle, const std::vector<InfoRow>& rows);
 	// 读取并整理屏幕 EDID 详情。
 	void LoadScreenInformation();
+	// 读取并整理系统异常详情。
+	void LoadSystemExceptionInformation();
 	// 将指定类别的信息导出为报告文件（命令行模式使用）。
 	bool ExportReportToFile(const CString& reportType, const CString& filePath, CString& errorMessage);
 	// 根据内容高度更新垂直滚动条状态。
@@ -159,6 +175,10 @@ public:
 	void RefreshPowerCfgReport(bool batteryReport);
 	// 使用默认浏览器打开指定 powercfg 日志。
 	void OpenPowerCfgReport(bool batteryReport);
+	// 启动非首屏页面的静默后台预加载。
+	void StartSilentPreload();
+	// 读取并整理 powercfg 日志摘要。
+	void LoadPowerCfgReportInformation(bool batteryReport);
 	// 读取启动项并刷新列表。
 	void LoadStartupItems();
 	// 将启动项数据同步到列表控件。
@@ -230,17 +250,23 @@ private:
 	struct AsyncLoadRequest
 	{
 		HWND targetHwnd = nullptr;
+		bool batteryReport = false;
 	};
 
 	struct AsyncLoadResult
 	{
 		std::vector<InfoRow> systemRows;
 		std::vector<InfoRow> systemStatusRows;
+		std::vector<InfoRow> systemExceptionRows;
 		std::vector<InfoRow> acpiRows;
 		std::vector<InfoRow> ssdRows;
 		std::vector<InfoRow> screenRows;
+		std::vector<InfoRow> batteryLogRows;
+		std::vector<InfoRow> powerLogRows;
 		std::vector<std::vector<InfoRow>> ssdDiskRows;
 		std::vector<CString> ssdTabTitles;
+		CString batteryLogPath;
+		CString powerLogPath;
 		int activeSsdIndex = 0;
 	};
 
@@ -276,11 +302,15 @@ private:
 	static UINT LoadSystemInformationThread(LPVOID parameter);
 	static UINT LoadSsdInformationThread(LPVOID parameter);
 	static UINT LoadScreenInformationThread(LPVOID parameter);
+	static UINT LoadSystemExceptionInformationThread(LPVOID parameter);
+	static UINT LoadBatteryLogInformationThread(LPVOID parameter);
+	static UINT LoadPowerLogInformationThread(LPVOID parameter);
 	static void PostAsyncLoadResult(HWND targetHwnd, UINT message, AsyncLoadResult* result);
 
 	// 系统信息数据与绘制资源。
 	std::vector<InfoRow> m_systemRows;
 	std::vector<InfoRow> m_systemStatusRows;
+	std::vector<InfoRow> m_systemExceptionRows;
 	std::vector<InfoRow> m_acpiRows;
 	std::vector<InfoRow> m_ssdRows;
 	std::vector<InfoRow> m_screenRows;
@@ -302,6 +332,7 @@ private:
 	CRect m_contentRect;
 	CRect m_infoMenuRect;
 	CRect m_statusMenuRect;
+	CRect m_exceptionMenuRect;
 	CRect m_startupMenuRect;
 	CRect m_acpiMenuRect;
 	CRect m_settingsMenuRect;
@@ -315,8 +346,13 @@ private:
 	bool m_ssdLoading = false;
 	bool m_screenLoaded = false;
 	bool m_screenLoading = false;
+	bool m_systemExceptionLoaded = false;
+	bool m_systemExceptionLoading = false;
 	bool m_batteryLogLoaded = false;
+	bool m_batteryLogLoading = false;
 	bool m_powerLogLoaded = false;
+	bool m_powerLogLoading = false;
+	bool m_silentPreloadStarted = false;
 	CString m_batteryLogPath;
 	CString m_powerLogPath;
 

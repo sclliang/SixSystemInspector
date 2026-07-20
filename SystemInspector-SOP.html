@@ -221,7 +221,7 @@
         <li>如果系统弹出 UAC 权限确认，点击“是”。</li>
         <li>程序打开后，通过左侧菜单切换不同信息页面。</li>
       </ol>
-      <p class="muted">SSD 信息和屏幕详情会在进入页面后后台加载，加载期间界面仍可正常操作。</p>
+      <p class="muted">程序启动后会先显示系统信息，再静默预加载 SSD 信息、屏幕详情、系统异常、电池日志和电源日志；加载期间界面仍可正常操作。</p>
     </section>
 
     <section>
@@ -235,6 +235,11 @@
         <article class="module">
           <h3>系统状态</h3>
           <p>查看 Windows 版本、Build、系统架构、安装日期、最近启动时间、运行时长、激活状态、系统语言、时区、Secure Boot 和 BitLocker 状态。</p>
+        </article>
+
+        <article class="module">
+          <h3>系统异常</h3>
+          <p>查看设备管理器异常驱动/设备，以及最近 30 天 System 日志中的重大异常事件。重点筛选 <code>Microsoft-Windows-WER-SystemErrorReporting</code> 1001、<code>System Error</code> 1003 和 41、以及常见 <code>Microsoft-Windows-Kernel-Power</code> 41，并展示事件时间、来源、记录号和详细消息。</p>
         </article>
 
         <article class="module">
@@ -320,6 +325,8 @@ SystemInspector.exe -Report EDID "D:\Temp\edid-report.txt"</code></pre>
       <h2>4. 使用注意</h2>
       <ul>
         <li>程序需要管理员权限，部分信息在普通权限下可能无法读取。</li>
+        <li>启动后的静默预加载会在后台生成电池日志和电源日志，并覆盖程序目录下的同名 HTML 报告文件。</li>
+        <li>系统异常页面读取设备管理器异常状态和最近 30 天的 System 重点异常日志，避免完整扫描大型事件日志。</li>
         <li>屏幕详情只读取当前活动显示器，不读取历史连接过的显示器记录。</li>
         <li>电池日志和电源日志保存在程序 EXE 所在目录，刷新会覆盖同名 HTML 报告文件。</li>
         <li>导出报告可能包含序列号、UUID、MAC 地址等设备标识信息，请注意保存和传输安全。</li>
