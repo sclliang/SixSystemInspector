@@ -206,10 +206,11 @@
   <main>
     <header>
       <h1>SystemInspector 使用 SOP</h1>
-      <p class="subtitle">SystemInspector 是一款 Windows 系统检测与系统设置查看工具，用于快速查看电脑硬件信息、系统状态、SSD 健康、屏幕 EDID 以及部分系统设置。</p>
+      <p class="subtitle">SystemInspector 是一款 Windows 系统检测与优化工具，用于快速查看硬件信息、驱动详情、系统状态、SSD 健康、屏幕 EDID、内置外部工具以及部分系统设置。</p>
       <div class="meta">
         <span class="pill">Windows 10 / 11</span>
         <span class="pill">管理员权限运行</span>
+        <span class="pill">内置 6 款工具</span>
         <span class="pill">支持命令行导出</span>
       </div>
     </header>
@@ -229,12 +230,12 @@
       <div class="grid">
         <article class="module">
           <h3>系统信息</h3>
-          <p>查看电脑基础硬件与身份信息，包括主板、CPU、GPU、内存、SSD、BIOS、EC、TPM、序列号、UUID、网卡地址和蓝牙地址等。</p>
+          <p>查看电脑基础硬件与身份信息，包括主板、CPU、GPU、内存、SSD、BIOS、EC、TPM、序列号、UUID、网卡（含型号与MAC地址）和蓝牙地址等。BIOS 显示为"厂商 版本, 日期"格式。</p>
         </article>
 
         <article class="module">
           <h3>系统状态</h3>
-          <p>查看 Windows 版本、Build、系统架构、安装日期、最近启动时间、运行时长、激活状态、系统语言、时区、Secure Boot 和 BitLocker 状态。</p>
+          <p>查看 Windows 版本、Build、系统架构、安装日期、最近启动时间、运行时长、激活状态、系统语言、时区、Secure Boot 和 BitLocker 状态。另外包含计算机名、域/工作组、登录用户、总/可用物理内存、虚拟内存、页面文件、引导设备、Hyper-V 状态、HAL 版本和电源计划等 msinfo32 风格摘要信息。</p>
         </article>
 
         <article class="module">
@@ -253,8 +254,8 @@
         </article>
 
         <article class="module">
-          <h3>硬件详情</h3>
-          <p>查看 CPU 制造商、名称、核心/线程、频率、CPUID 签名、虚拟化、指令集，GPU 显存/驱动/显示模式，以及 BIOS/SMBIOS、主板、机箱和系统产品信息。内存信息按每根 DIMM 独立显示，包含插槽、容量、类型、频率、厂商、Part Number 和序列号。</p>
+          <h3>驱动详情</h3>
+          <p>以设备管理器风格三级树形结构展示所有已签名驱动，按设备类别分组。每个设备下显示驱动版本、驱动日期和提供商，全部节点默认展开。数据来源于 <code>Win32_PnPSignedDriver</code>。</p>
         </article>
 
         <article class="module">
@@ -270,6 +271,11 @@
         <article class="module">
           <h3>电源日志</h3>
           <p>通过 <code>powercfg /sleepstudy</code> 导出睡眠与电源行为 HTML 报告。页面会显示生成状态、保存路径、文件大小和生成时间；点击“详情”可在默认浏览器中打开报告，点击“刷新”会重新导出并覆盖程序目录下的 <code>SystemInspector-SleepStudy.html</code>。</p>
+        </article>
+
+        <article class="module">
+          <h3>实用工具</h3>
+          <p>内置 6 款硬件检测工具（CPU-Z、BatteryInfoView、Core Temp、HWiNFO64、CrystalDiskMark、USBTreeView），以图标卡片形式展示，点击可释放到程序目录并运行（已存在则直接启动）。另外提供 AMD / Nvidia 驱动官方下载链接，点击以默认浏览器打开。</p>
         </article>
 
         <article class="module">

@@ -17,9 +17,12 @@
 #include <atlstr.h>
 #include <winioctl.h>
 #include <Shlwapi.h>
+#include <shlobj.h>
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <ShlObj.h>
+#include <setupapi.h>
+#include <cfgmgr32.h>
 #include <intrin.h>
 #include <cwctype>
 #include <cstring>
@@ -34,6 +37,8 @@
 #pragma comment(lib, "Dwmapi.lib")
 #pragma comment(lib, "UxTheme.lib")
 #pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "Setupapi.lib")
+#pragma comment(lib, "Cfgmgr32.lib")
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
@@ -70,6 +75,8 @@ namespace
 	constexpr UINT WM_APP_APPLY_BATTERY_LOG_INFO = WM_APP + 109;
 	constexpr UINT WM_APP_LOAD_POWER_LOG_INFO = WM_APP + 110;
 	constexpr UINT WM_APP_APPLY_POWER_LOG_INFO = WM_APP + 111;
+	constexpr UINT WM_APP_LOAD_DRIVER_DETAILS = WM_APP + 112;
+	constexpr UINT WM_APP_APPLY_DRIVER_DETAILS = WM_APP + 113;
 	constexpr int PAGE_SYSTEM_INFO = 0;
 	constexpr int PAGE_SYSTEM_SETTINGS = 1;
 	constexpr int PAGE_SSD_INFO = 2;
@@ -80,6 +87,7 @@ namespace
 	constexpr int PAGE_BATTERY_LOG = 7;
 	constexpr int PAGE_POWER_LOG = 8;
 	constexpr int PAGE_SYSTEM_EXCEPTION = 9;
+	constexpr int PAGE_UTILITY_TOOLS = 10;
 	constexpr UINT IDC_CHK_UAC = 3001;
 	constexpr UINT IDC_CHK_FIREWALL = 3002;
 	constexpr UINT IDC_CHK_SEC_CENTER = 3003;
@@ -94,6 +102,7 @@ namespace
 	constexpr UINT IDC_STATUS_TEXT = 3013;
 	constexpr UINT IDC_ADMIN_HINT_TEXT = 3014;
 	constexpr UINT IDC_SSD_TAB = 3015;
+	constexpr UINT IDC_DRIVER_TREE = 3016;
 	constexpr UINT IDC_STARTUP_LIST = 3020;
 	constexpr UINT IDC_STARTUP_ENABLE = 3021;
 	constexpr UINT IDC_STARTUP_DISABLE = 3022;
@@ -2291,7 +2300,6 @@ namespace
 			return _T("");
 		}
 
-		unsigned long long totalBytes = 0;
 		std::vector<CString> modules;
 		modules.reserve(rows.size());
 
@@ -2303,7 +2311,6 @@ namespace
 			}
 
 			const unsigned long long bytes = ParseUnsignedLongLong(row[0]);
-			totalBytes += bytes;
 
 			CString moduleText = HasValue(row[0]) ? FormatBytesToGB(bytes) : _T("容量未知");
 			if (HasValue(row[1]))
@@ -2327,14 +2334,6 @@ namespace
 		}
 
 		CString result;
-		if (totalBytes > 0)
-		{
-			result += _T("总计 ");
-			result += FormatBytesToGB(totalBytes);
-			result += _T("\r\n");
-		}
-
-		result.AppendFormat(_T("内存条: %u\r\n"), static_cast<unsigned>(modules.size()));
 		for (size_t i = 0; i < modules.size(); ++i)
 		{
 			if (i != 0)
@@ -2740,7 +2739,7 @@ namespace
 			_T("SELECT Name, MACAddress, PhysicalAdapter, PNPDeviceID FROM Win32_NetworkAdapter WHERE MACAddress IS NOT NULL"),
 			{ _T("Name"), _T("MACAddress"), _T("PhysicalAdapter"), _T("PNPDeviceID") });
 
-		std::set<CString, std::less<>> macs;
+		std::vector<CString> entries;
 		for (const auto& row : rows)
 		{
 			if (row.size() < 4)
@@ -2763,6 +2762,26 @@ namespace
 			}
 
 			const CString matcher = ToLower(name + _T(" ") + pnp);
+			bool skipVirtual = false;
+			const TCHAR* virtualKeys[] = {
+				_T("virtual"), _T("hyper-v"), _T("virtualbox"), _T("vmware"),
+				_T("wan miniport"), _T("kernel debug"), _T("isatap"),
+				_T("teredo"), _T("6to4"), _T("loopback"), _T("tap-"),
+				_T("tap "), _T("vpn"), _T("tunnel"), _T("pseudo"),
+				_T("miniport"), _T("debugger"), _T("ndis"), _T("host"),
+			};
+			for (const TCHAR* key : virtualKeys)
+			{
+				if (matcher.Find(key) >= 0)
+				{
+					skipVirtual = true;
+					break;
+				}
+			}
+			if (skipVirtual)
+			{
+				continue;
+			}
 			const bool isWireless =
 				matcher.Find(_T("wireless")) >= 0 ||
 				matcher.Find(_T("wi-fi")) >= 0 ||
@@ -2773,28 +2792,34 @@ namespace
 
 			if (wireless)
 			{
-				if (isWireless)
+				if (!isWireless)
 				{
-					macs.insert(mac);
+					continue;
 				}
 			}
 			else
 			{
-				if (!isWireless && !isBluetooth)
+				if (isWireless || isBluetooth)
 				{
-					macs.insert(mac);
+					continue;
 				}
 			}
+
+			CString entry = HasValue(name) ? name : _T("未知网卡");
+			entry += _T(" (");
+			entry += mac;
+			entry += _T(")");
+			entries.push_back(entry);
 		}
 
 		CString result;
-		for (const CString& mac : macs)
+		for (const CString& entry : entries)
 		{
 			if (!result.IsEmpty())
 			{
-				result += _T(" / ");
+				result += _T("\r\n");
 			}
-			result += mac;
+			result += entry;
 		}
 		return result;
 	}
@@ -3081,6 +3106,227 @@ namespace
 			return _T("不支持或未知");
 		}
 		return enabled != 0 ? _T("已启用") : _T("未启用");
+	}
+
+	CString ResolveActivePowerPlan()
+	{
+		CString result;
+		const auto rows = QueryWmiRows(
+			_T("ROOT\\CIMV2\\power"),
+			_T("SELECT ElementName, IsActive FROM Win32_PowerPlan WHERE IsActive = TRUE"),
+			{ _T("ElementName") });
+		for (const auto& row : rows)
+		{
+			if (!row.empty() && HasValue(row[0]))
+			{
+				if (!result.IsEmpty())
+					result += _T(" / ");
+				result += row[0];
+			}
+		}
+		if (result.IsEmpty())
+		{
+			result = _T("未检测到");
+		}
+		return result;
+	}
+
+	CString MapDeviceClassGuid(const CString& guid)
+	{
+		static const std::pair<const TCHAR*, const TCHAR*> kMap[] = {
+			{ _T("{4d36e968-e325-11ce-bfc1-08002be10318}"), _T("显示适配器") },
+			{ _T("{4d36e967-e325-11ce-bfc1-08002be10318}"), _T("磁盘驱动器") },
+			{ _T("{4d36e972-e325-11ce-bfc1-08002be10318}"), _T("网络适配器") },
+			{ _T("{4d36e97d-e325-11ce-bfc1-08002be10318}"), _T("系统设备") },
+			{ _T("{4d36e96e-e325-11ce-bfc1-08002be10318}"), _T("监视器") },
+			{ _T("{4d36e96c-e325-11ce-bfc1-08002be10318}"), _T("声音、视频和游戏控制器") },
+			{ _T("{4d36e96a-e325-11ce-bfc1-08002be10318}"), _T("IDE ATA/ATAPI 控制器") },
+			{ _T("{4d36e97b-e325-11ce-bfc1-08002be10318}"), _T("存储控制器") },
+			{ _T("{36fc9e60-c465-11cf-8056-444553540000}"), _T("通用串行总线控制器") },
+			{ _T("{4d36e96f-e325-11ce-bfc1-08002be10318}"), _T("鼠标和其他指针设备") },
+			{ _T("{4d36e96b-e325-11ce-bfc1-08002be10318}"), _T("键盘") },
+			{ _T("{50127dc3-0f36-415e-a6cc-4cb3be910b65}"), _T("处理器") },
+			{ _T("{4d36e966-e325-11ce-bfc1-08002be10318}"), _T("计算机") },
+			{ _T("{4d36e96d-e325-11ce-bfc1-08002be10318}"), _T("调制解调器") },
+			{ _T("{4d36e978-e325-11ce-bfc1-08002be10318}"), _T("端口(COM / LPT)") },
+			{ _T("{4d36e979-e325-11ce-bfc1-08002be10318}"), _T("打印机") },
+			{ _T("{4d36e97e-e325-11ce-bfc1-08002be10318}"), _T("安全设备") },
+			{ _T("{745a17a0-74d3-11d0-b6fe-00a0c90f57da}"), _T("人机接口设备") },
+			{ _T("{4d36e971-e325-11ce-bfc1-08002be10318}"), _T("多媒体设备") },
+			{ _T("{4d36e974-e325-11ce-bfc1-08002be10318}"), _T("非即插即用驱动程序") },
+			{ _T("{4d36e975-e325-11ce-bfc1-08002be10318}"), _T("电池") },
+			{ _T("{72631e54-78a4-11d0-bcf7-00a0c90f57da}"), _T("电池") },
+			{ _T("{4d36e965-e325-11ce-bfc1-08002be10318}"), _T("CD-ROM 驱动器") },
+			{ _T("{4d36e969-e325-11ce-bfc1-08002be10318}"), _T("软盘控制器") },
+			{ _T("{4d36e973-e325-11ce-bfc1-08002be10318}"), _T("网络客户端") },
+			{ _T("{4d36e970-e325-11ce-bfc1-08002be10318}"), _T("红外线设备") },
+			{ _T("{c166523c-fe0c-4a94-a586-f1a80cfbbf3e}"), _T("音频输入和输出") },
+			{ _T("{ca3e7ab9-b4c3-4ae6-8251-579ef933890f}"), _T("摄像头") },
+			{ _T("{62f9c741-b25a-46ef-8aed-2b6f3127d8e3}"), _T("软件设备") },
+			{ _T("{50906cb8-ba12-11d1-bf5c-0000f805f530}"), _T("多串口适配器") },
+			{ _T("{e0cbf06c-cd8b-4647-bb8a-263b43f0f974}"), _T("蓝牙") },
+			{ _T("{f2e7dd72-6468-4e36-b6f1-6488f42c1b52}"), _T("固件") },
+			{ _T("{88bae032-5a81-49f0-bc3d-a4ff138216d6}"), _T("软件组件") },
+			{ _T("{1ed2bbf9-11f0-4084-b21f-ad83a8e6dcdc}"), _T("打印机队列") },
+			{ _T("{d61ca365-5af4-4486-998b-9db4734c6ca3}"), _T("传感器") },
+		};
+		const CString lower = ToLower(guid);
+		for (const auto& pair : kMap)
+		{
+			if (lower.CompareNoCase(pair.first) == 0)
+			{
+				return pair.second;
+			}
+		}
+		return _T("其他设备");
+	}
+
+	CString NormalizeDeviceClassName(const CString& deviceClass, const CString& classGuid)
+	{
+		if (HasValue(classGuid))
+		{
+			const CString mapped = MapDeviceClassGuid(classGuid);
+			if (HasValue(mapped) && mapped != _T("其他设备"))
+			{
+				return mapped;
+			}
+		}
+
+		CString cls = Trimmed(deviceClass);
+		if (!HasValue(cls))
+		{
+			return _T("其他设备");
+		}
+
+		const CString lower = ToLower(cls);
+		static const std::pair<const TCHAR*, const TCHAR*> kMap[] = {
+			{ _T("diskdrive"), _T("磁盘驱动器") },
+			{ _T("display"), _T("显示适配器") },
+			{ _T("net"), _T("网络适配器") },
+			{ _T("media"), _T("声音、视频和游戏控制器") },
+			{ _T("usb"), _T("通用串行总线控制器") },
+			{ _T("hidclass"), _T("人机接口设备") },
+			{ _T("keyboard"), _T("键盘") },
+			{ _T("mouse"), _T("鼠标和其他指针设备") },
+			{ _T("monitor"), _T("监视器") },
+			{ _T("processor"), _T("处理器") },
+			{ _T("computer"), _T("计算机") },
+			{ _T("system"), _T("系统设备") },
+			{ _T("scsiadapter"), _T("存储控制器") },
+			{ _T("hdc"), _T("IDE ATA/ATAPI 控制器") },
+			{ _T("ports"), _T("端口(COM / LPT)") },
+			{ _T("printer"), _T("打印机") },
+			{ _T("printqueue"), _T("打印队列") },
+			{ _T("softwaredevice"), _T("软件设备") },
+			{ _T("softwarecomponent"), _T("软件组件") },
+			{ _T("bluetooth"), _T("蓝牙") },
+			{ _T("battery"), _T("电池") },
+			{ _T("firmware"), _T("固件") },
+			{ _T("securitydevices"), _T("安全设备") },
+			{ _T("biometric"), _T("生物识别设备") },
+			{ _T("camera"), _T("摄像头") },
+		};
+
+		for (const auto& pair : kMap)
+		{
+			if (lower.CompareNoCase(pair.first) == 0)
+			{
+				return pair.second;
+			}
+		}
+		return cls;
+	}
+
+	CString ReadSetupDeviceProperty(HDEVINFO deviceInfoSet, SP_DEVINFO_DATA& deviceInfoData, DWORD property)
+	{
+		DWORD dataType = 0;
+		DWORD requiredSize = 0;
+		SetupDiGetDeviceRegistryProperty(
+			deviceInfoSet,
+			&deviceInfoData,
+			property,
+			&dataType,
+			nullptr,
+			0,
+			&requiredSize);
+
+		if (requiredSize == 0)
+		{
+			return _T("");
+		}
+
+		std::vector<BYTE> buffer(requiredSize + sizeof(TCHAR), 0);
+		if (!SetupDiGetDeviceRegistryProperty(
+			deviceInfoSet,
+			&deviceInfoData,
+			property,
+			&dataType,
+			buffer.data(),
+			static_cast<DWORD>(buffer.size()),
+			nullptr))
+		{
+			return _T("");
+		}
+
+		if (dataType != REG_SZ && dataType != REG_EXPAND_SZ)
+		{
+			return _T("");
+		}
+
+		return Trimmed(CString(reinterpret_cast<const TCHAR*>(buffer.data())));
+	}
+
+	CString ReadDriverKeyValue(const CString& driverKey, const CString& valueName)
+	{
+		if (!HasValue(driverKey))
+		{
+			return _T("");
+		}
+
+		CString keyPath = _T("SYSTEM\\CurrentControlSet\\Control\\Class\\");
+		keyPath += driverKey;
+
+		HKEY hKey = nullptr;
+		if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, keyPath, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+		{
+			return _T("");
+		}
+
+		DWORD dataType = 0;
+		DWORD dataSize = 0;
+		LSTATUS status = RegQueryValueEx(hKey, valueName, nullptr, &dataType, nullptr, &dataSize);
+		if (status != ERROR_SUCCESS || (dataType != REG_SZ && dataType != REG_EXPAND_SZ) || dataSize == 0)
+		{
+			RegCloseKey(hKey);
+			return _T("");
+		}
+
+		std::vector<BYTE> buffer(dataSize + sizeof(TCHAR), 0);
+		status = RegQueryValueEx(hKey, valueName, nullptr, nullptr, buffer.data(), &dataSize);
+		RegCloseKey(hKey);
+		if (status != ERROR_SUCCESS)
+		{
+			return _T("");
+		}
+
+		return Trimmed(CString(reinterpret_cast<const TCHAR*>(buffer.data())));
+	}
+
+	CString FormatDriverDateText(const CString& rawDate)
+	{
+		CString date = Trimmed(rawDate);
+		if (!HasValue(date))
+		{
+			return _T("");
+		}
+
+		date.Replace(_T("-"), _T("/"));
+		const int space = date.Find(_T(" "));
+		if (space > 0)
+		{
+			date = date.Left(space);
+		}
+		return date;
 	}
 
 	CString BitLockerProtectionStatusText(const CString& status)
@@ -3509,12 +3755,14 @@ BEGIN_MESSAGE_MAP(CMFCApplication1Dlg, CDialogEx)
 	ON_MESSAGE(WM_APP_LOAD_SYSTEM_EXCEPTION_INFO, &CMFCApplication1Dlg::OnLoadSystemExceptionInformation)
 	ON_MESSAGE(WM_APP_LOAD_BATTERY_LOG_INFO, &CMFCApplication1Dlg::OnLoadBatteryLogInformation)
 	ON_MESSAGE(WM_APP_LOAD_POWER_LOG_INFO, &CMFCApplication1Dlg::OnLoadPowerLogInformation)
+	ON_MESSAGE(WM_APP_LOAD_DRIVER_DETAILS, &CMFCApplication1Dlg::OnLoadDriverDetails)
 	ON_MESSAGE(WM_APP_APPLY_SYSTEM_INFO, &CMFCApplication1Dlg::OnApplyLoadedSystemInformation)
 	ON_MESSAGE(WM_APP_APPLY_SSD_INFO, &CMFCApplication1Dlg::OnApplyLoadedSsdInformation)
 	ON_MESSAGE(WM_APP_APPLY_SCREEN_INFO, &CMFCApplication1Dlg::OnApplyLoadedScreenInformation)
 	ON_MESSAGE(WM_APP_APPLY_SYSTEM_EXCEPTION_INFO, &CMFCApplication1Dlg::OnApplyLoadedSystemExceptionInformation)
 	ON_MESSAGE(WM_APP_APPLY_BATTERY_LOG_INFO, &CMFCApplication1Dlg::OnApplyLoadedBatteryLogInformation)
 	ON_MESSAGE(WM_APP_APPLY_POWER_LOG_INFO, &CMFCApplication1Dlg::OnApplyLoadedPowerLogInformation)
+	ON_MESSAGE(WM_APP_APPLY_DRIVER_DETAILS, &CMFCApplication1Dlg::OnApplyLoadedDriverDetails)
 	ON_BN_CLICKED(IDC_BTN_APPLY_SETTINGS, &CMFCApplication1Dlg::OnBnClickedApplySettings)
 	ON_BN_CLICKED(IDC_BTN_REBOOT, &CMFCApplication1Dlg::OnBnClickedRebootSystem)
 	ON_BN_CLICKED(IDC_BTN_TOGGLE_SELECT, &CMFCApplication1Dlg::OnBnClickedToggleSelect)
@@ -3533,6 +3781,7 @@ BEGIN_MESSAGE_MAP(CMFCApplication1Dlg, CDialogEx)
 	ON_NOTIFY(LVN_ITEMCHANGED, IDC_STARTUP_LIST, &CMFCApplication1Dlg::OnLvnItemchangedStartupList)
 	ON_NOTIFY(NM_RCLICK, IDC_STARTUP_LIST, &CMFCApplication1Dlg::OnNMRClickStartupList)
 	ON_NOTIFY(NM_CUSTOMDRAW, IDC_STARTUP_LIST, &CMFCApplication1Dlg::OnNMCustomdrawStartupList)
+	ON_NOTIFY(NM_CUSTOMDRAW, IDC_DRIVER_TREE, &CMFCApplication1Dlg::OnNMCustomdrawDriverTree)
 END_MESSAGE_MAP()
 
 // 初始化主对话框：菜单、图标、布局与异步加载入口。
@@ -3557,12 +3806,26 @@ BOOL CMFCApplication1Dlg::OnInitDialog()
 	SetIcon(m_hIcon, TRUE);
 	SetIcon(m_hIcon, FALSE);
 	SetWindowText(_T("SystemInspector"));
+	m_hIconCpuz = AfxGetApp()->LoadIcon(IDI_TOOL_CPUZ);
+	m_hIconBattery = AfxGetApp()->LoadIcon(IDI_TOOL_BATTERY);
+	m_hIconCoreTemp = AfxGetApp()->LoadIcon(IDI_TOOL_CORETEMP);
+	m_hIconHwinfo = AfxGetApp()->LoadIcon(IDI_TOOL_HWINFO);
+	m_hIconCrystalDiskMark = AfxGetApp()->LoadIcon(IDI_TOOL_CRYSTALDISKMARK);
+	m_hIconUsbTreeView = AfxGetApp()->LoadIcon(IDI_TOOL_USBTREEVIEW);
+
+	SHSTOCKICONINFO sii = { sizeof(SHSTOCKICONINFO) };
+	if (SUCCEEDED(SHGetStockIconInfo(SIID_WORLD, SHGSI_ICON | SHGSI_LARGEICON, &sii)))
+	{
+		m_hIconGlobe = sii.hIcon;
+	}
+
 	CenterWindowAtTwoThirdsOfScreen(*this);
 	EnableWin11Chrome(GetSafeHwnd());
 
 	BuildMainLayout();
 	CreateSettingsControls();
 	CreateSsdControls();
+	CreateDriverControls();
 	CreateStartupControls();
 	CreatePowerLogControls();
 	UpdatePageVisibility();
@@ -3756,6 +4019,35 @@ void CMFCApplication1Dlg::OnLButtonDown(UINT nFlags, CPoint point)
 			Invalidate();
 		}
 	}
+	else if (m_utilityMenuRect.PtInRect(point))
+	{
+		if (m_activePage != PAGE_UTILITY_TOOLS)
+		{
+			m_activePage = PAGE_UTILITY_TOOLS;
+			UpdatePageVisibility();
+			Invalidate();
+		}
+	}
+
+	if (m_activePage == PAGE_UTILITY_TOOLS)
+	{
+		if (m_toolCpuzRect.PtInRect(point))
+			LaunchUtilityTool(IDR_TOOL_CPUZ, _T("CPUZ"), _T("cpuz_x64.exe"));
+		else if (m_toolBatteryRect.PtInRect(point))
+			LaunchUtilityTool(IDR_TOOL_BATTERY, _T("BatteryInfoView"), _T("BatteryInfoView.exe"));
+		else if (m_toolCoreTempRect.PtInRect(point))
+			LaunchUtilityTool(IDR_TOOL_CORETEMP, _T("CoreTemp64"), _T("Core Temp.exe"));
+		else if (m_toolHwinfoRect.PtInRect(point))
+			LaunchUtilityTool(IDR_TOOL_HWINFO, _T("hwinfo"), _T("HWiNFO64.exe"));
+		else if (m_toolCrystalDiskMarkRect.PtInRect(point))
+			LaunchUtilityTool(IDR_TOOL_CRYSTALDISKMARK, _T("CrystalDiskMark"), _T("DiskMark64.exe"));
+		else if (m_toolUsbTreeViewRect.PtInRect(point))
+			LaunchUtilityTool(IDR_TOOL_USBTREEVIEW, _T("USBTreeView"), _T("UsbTreeView.exe"));
+		else if (m_toolAmdDriverRect.PtInRect(point))
+			ShellExecute(nullptr, _T("open"), _T("https://www.amd.com/zh-hans/support"), nullptr, nullptr, SW_SHOWNORMAL);
+		else if (m_toolNvidiaDriverRect.PtInRect(point))
+			ShellExecute(nullptr, _T("open"), _T("https://www.nvidia.cn/geforce/drivers/"), nullptr, nullptr, SW_SHOWNORMAL);
+	}
 
 	CDialogEx::OnLButtonDown(nFlags, point);
 }
@@ -3766,7 +4058,6 @@ void CMFCApplication1Dlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 	if (m_activePage != PAGE_SYSTEM_INFO &&
 		m_activePage != PAGE_SYSTEM_STATUS &&
 		m_activePage != PAGE_SYSTEM_EXCEPTION &&
-		m_activePage != PAGE_ACPI_INFO &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
 		m_activePage != PAGE_SCREEN_INFO &&
@@ -3780,6 +4071,7 @@ void CMFCApplication1Dlg::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pScroll
 	UNREFERENCED_PARAMETER(pScrollBar);
 
 	SCROLLINFO si = {};
+
 	si.cbSize = sizeof(SCROLLINFO);
 	si.fMask = SIF_ALL;
 	GetScrollInfo(SB_VERT, &si);
@@ -3839,7 +4131,6 @@ BOOL CMFCApplication1Dlg::OnMouseWheel(UINT nFlags, short zDelta, CPoint pt)
 	if (m_activePage != PAGE_SYSTEM_INFO &&
 		m_activePage != PAGE_SYSTEM_STATUS &&
 		m_activePage != PAGE_SYSTEM_EXCEPTION &&
-		m_activePage != PAGE_ACPI_INFO &&
 		m_activePage != PAGE_SYSTEM_SETTINGS &&
 		m_activePage != PAGE_SSD_INFO &&
 		m_activePage != PAGE_SCREEN_INFO &&
@@ -3904,6 +4195,7 @@ void CMFCApplication1Dlg::AdjustLayout(int cx, int cy)
 	RecalcLayoutRects(clientRect);
 	UpdateSettingsControlLayout();
 	UpdateSsdControlLayout();
+	UpdateDriverControlLayout();
 	UpdateStartupControlLayout();
 	UpdatePowerLogControlLayout();
 }
@@ -4005,6 +4297,27 @@ LRESULT CMFCApplication1Dlg::OnLoadPowerLogInformation(WPARAM wParam, LPARAM lPa
 	{
 		delete request;
 		m_powerLogLoading = false;
+		Invalidate();
+	}
+	return 0;
+}
+
+LRESULT CMFCApplication1Dlg::OnLoadDriverDetails(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(wParam);
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadRequest* request = new AsyncLoadRequest;
+	request->targetHwnd = GetSafeHwnd();
+	if (AfxBeginThread(&CMFCApplication1Dlg::LoadDriverDetailsThread, request) == nullptr)
+	{
+		delete request;
+		m_driverDetailsLoading = false;
+		if (!m_driverDetailsLoaded)
+		{
+			m_driverClassGroups.clear();
+			m_driverComputerName = _T("本机");
+			ShowDriverDetailsLoading();
+		}
 		Invalidate();
 	}
 	return 0;
@@ -4137,6 +4450,26 @@ LRESULT CMFCApplication1Dlg::OnApplyLoadedPowerLogInformation(WPARAM wParam, LPA
 	return 0;
 }
 
+LRESULT CMFCApplication1Dlg::OnApplyLoadedDriverDetails(WPARAM wParam, LPARAM lParam)
+{
+	UNREFERENCED_PARAMETER(lParam);
+	AsyncLoadResult* result = reinterpret_cast<AsyncLoadResult*>(wParam);
+	if (result == nullptr)
+	{
+		return 0;
+	}
+
+	m_driverComputerName = result->driverComputerName;
+	m_driverClassGroups = result->driverClassGroups;
+	m_driverDetailsLoaded = true;
+	m_driverDetailsLoading = false;
+	delete result;
+
+	RefreshDriverTree();
+	Invalidate();
+	return 0;
+}
+
 void CMFCApplication1Dlg::PostAsyncLoadResult(HWND targetHwnd, UINT message, AsyncLoadResult* result)
 {
 	if (::IsWindow(targetHwnd) && ::PostMessage(targetHwnd, message, reinterpret_cast<WPARAM>(result), 0))
@@ -4240,6 +4573,24 @@ UINT CMFCApplication1Dlg::LoadPowerLogInformationThread(LPVOID parameter)
 	result->powerLogRows = loader.m_powerLogRows;
 	result->powerLogPath = loader.m_powerLogPath;
 	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_POWER_LOG_INFO, result);
+	return 0;
+}
+
+UINT CMFCApplication1Dlg::LoadDriverDetailsThread(LPVOID parameter)
+{
+	AsyncLoadRequest* request = reinterpret_cast<AsyncLoadRequest*>(parameter);
+	const HWND targetHwnd = request != nullptr ? request->targetHwnd : nullptr;
+	delete request;
+
+	CMFCApplication1Dlg loader;
+	CString computerName;
+	std::vector<DriverClassGroup> classGroups;
+	loader.CollectDriverDetails(computerName, classGroups);
+
+	AsyncLoadResult* result = new AsyncLoadResult;
+	result->driverComputerName = computerName;
+	result->driverClassGroups = classGroups;
+	PostAsyncLoadResult(targetHwnd, WM_APP_APPLY_DRIVER_DETAILS, result);
 	return 0;
 }
 
@@ -4544,7 +4895,40 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	const CString gpuDetails = ResolveGpuDetails();
 	const std::vector<CString> memoryDetailLines = ResolveMemoryDetailLines();
 	const CString ssdInfo = ResolveDiskInfo();
-	const CString biosVersion = FirstValue(_T("ROOT\\CIMV2"), _T("SELECT SMBIOSBIOSVersion FROM Win32_BIOS"), _T("SMBIOSBIOSVersion"));
+
+	CString biosVersion;
+	{
+		const auto biosRows = QueryWmiRows(
+			_T("ROOT\\CIMV2"),
+			_T("SELECT Manufacturer, SMBIOSBIOSVersion, ReleaseDate FROM Win32_BIOS"),
+			{ _T("Manufacturer"), _T("SMBIOSBIOSVersion"), _T("ReleaseDate") });
+		if (!biosRows.empty() && !biosRows.front().empty())
+		{
+			const auto& row = biosRows.front();
+			if (row.size() > 0 && HasValue(row[0]))
+			{
+				biosVersion += row[0];
+				biosVersion += _T(" ");
+			}
+			if (row.size() > 1 && HasValue(row[1]))
+			{
+				biosVersion += row[1];
+			}
+			if (row.size() > 2 && HasValue(row[2]))
+			{
+				const CString& wmiDate = row[2];
+				if (wmiDate.GetLength() >= 8)
+				{
+					biosVersion += _T(", ");
+					biosVersion += wmiDate.Left(4);
+					biosVersion += _T("/");
+					biosVersion += wmiDate.Mid(4, 2);
+					biosVersion += _T("/");
+					biosVersion += wmiDate.Mid(6, 2);
+				}
+			}
+		}
+	}
 	const CString ecVersion = ResolveEcVersion();
 	const CString boardSn = FirstValue(_T("ROOT\\CIMV2"), _T("SELECT SerialNumber FROM Win32_BaseBoard"), _T("SerialNumber"));
 	const CString systemSn = FirstValue(_T("ROOT\\CIMV2"), _T("SELECT SerialNumber FROM Win32_BIOS"), _T("SerialNumber"));
@@ -4553,10 +4937,15 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	const CString wirelessMac = ResolveMacAddress(true);
 	const CString bluetoothAddress = ResolveBluetoothAddress();
 	const CString tpmModel = ResolveTpmModel();
+	const auto csRows = QueryWmiRows(
+		_T("ROOT\\CIMV2"),
+		_T("SELECT Name, Domain, HypervisorPresent, TotalPhysicalMemory, SystemType, UserName FROM Win32_ComputerSystem"),
+		{ _T("Name"), _T("Domain"), _T("HypervisorPresent"), _T("TotalPhysicalMemory"), _T("SystemType"), _T("UserName") });
+	const std::vector<CString> csRow = csRows.empty() ? std::vector<CString>() : csRows.front();
 	const auto osRows = QueryWmiRows(
 		_T("ROOT\\CIMV2"),
-		_T("SELECT Caption, Version, BuildNumber, OSArchitecture, InstallDate, LastBootUpTime, WindowsDirectory FROM Win32_OperatingSystem"),
-		{ _T("Caption"), _T("Version"), _T("BuildNumber"), _T("OSArchitecture"), _T("InstallDate"), _T("LastBootUpTime"), _T("WindowsDirectory") });
+		_T("SELECT Caption, Version, BuildNumber, OSArchitecture, InstallDate, LastBootUpTime, WindowsDirectory, FreePhysicalMemory, TotalVirtualMemorySize, FreeVirtualMemory, BootDevice, TotalVisibleMemorySize FROM Win32_OperatingSystem"),
+		{ _T("Caption"), _T("Version"), _T("BuildNumber"), _T("OSArchitecture"), _T("InstallDate"), _T("LastBootUpTime"), _T("WindowsDirectory"), _T("FreePhysicalMemory"), _T("TotalVirtualMemorySize"), _T("FreeVirtualMemory"), _T("BootDevice"), _T("TotalVisibleMemorySize") });
 	const std::vector<CString> osRow = osRows.empty() ? std::vector<CString>() : osRows.front();
 	const auto diskRows = QueryWmiRows(
 		_T("ROOT\\CIMV2"),
@@ -4592,8 +4981,8 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	AddSystemInfoRow(_T("主板SN"), boardSn);
 	AddSystemInfoRow(_T("系统SN"), systemSn);
 	AddSystemInfoRow(_T("UUID"), uuid);
-	AddSystemInfoRow(_T("有线网卡地址"), wiredMac);
-	AddSystemInfoRow(_T("无线网卡地址"), wirelessMac);
+	AddSystemInfoRow(_T("有线网卡"), wiredMac);
+	AddSystemInfoRow(_T("无线网卡"), wirelessMac);
 	AddSystemInfoRow(_T("蓝牙地址"), bluetoothAddress);
 	AddSystemInfoRow(_T("TPM型号"), tpmModel);
 
@@ -4612,6 +5001,60 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 	addSystemStatusRow(_T("Windows目录"), osRow.size() > 6 ? osRow[6] : _T(""));
 	addSystemStatusRow(_T("Secure Boot"), ResolveSecureBootStatus());
 	addSystemStatusRow(_T("BitLocker"), ResolveBitLockerStatus());
+	addSystemStatusRow(_T("计算机名"), csRow.size() > 0 ? csRow[0] : _T(""));
+	addSystemStatusRow(_T("域/工作组"), csRow.size() > 1 ? csRow[1] : _T(""));
+	addSystemStatusRow(_T("登录用户"), csRow.size() > 5 ? csRow[5] : _T(""));
+	addSystemStatusRow(_T("系统类型"), csRow.size() > 4 ? csRow[4] : _T(""));
+	{
+		CString totalMem;
+		if (csRow.size() > 3 && HasValue(csRow[3]))
+		{
+			const double totalGB = _ttof(csRow[3]) / (1024.0 * 1024.0 * 1024.0);
+			totalMem.Format(_T("%.1f GB"), totalGB);
+		}
+		addSystemStatusRow(_T("总物理内存"), totalMem);
+	}
+	{
+		CString availMem;
+		if (osRow.size() > 7 && HasValue(osRow[7]))
+		{
+			const double availGB = _ttof(osRow[7]) / (1024.0 * 1024.0);
+			availMem.Format(_T("%.1f GB"), availGB);
+		}
+		addSystemStatusRow(_T("可用物理内存"), availMem);
+	}
+	{
+		CString totalVM;
+		if (osRow.size() > 8 && HasValue(osRow[8]))
+		{
+			const double vmGB = _ttof(osRow[8]) / (1024.0 * 1024.0);
+			totalVM.Format(_T("%.1f GB"), vmGB);
+		}
+		addSystemStatusRow(_T("虚拟内存总计"), totalVM);
+	}
+	{
+		CString freeVM;
+		if (osRow.size() > 9 && HasValue(osRow[9]))
+		{
+			const double freeVMGB = _ttof(osRow[9]) / (1024.0 * 1024.0);
+			freeVM.Format(_T("%.1f GB"), freeVMGB);
+		}
+		addSystemStatusRow(_T("可用虚拟内存"), freeVM);
+	}
+	{
+		CString pageFile;
+		if (osRow.size() > 11 && HasValue(osRow[11]))
+		{
+			const double pfGB = _ttof(osRow[11]) / 1024.0;
+			const double totalPhysGB = (csRow.size() > 3 && HasValue(csRow[3])) ? _ttof(csRow[3]) / (1024.0 * 1024.0 * 1024.0) : 0.0;
+			pageFile.Format(_T("%.1f GB (物理 %.1f GB)"), pfGB, totalPhysGB);
+		}
+		addSystemStatusRow(_T("页面文件"), pageFile);
+	}
+	addSystemStatusRow(_T("引导设备"), osRow.size() > 10 ? osRow[10] : _T(""));
+	addSystemStatusRow(_T("Hyper-V"), csRow.size() > 2 ? (HasValue(csRow[2]) && csRow[2].CompareNoCase(_T("TRUE")) == 0 ? _T("已启用") : _T("未启用")) : _T(""));
+	addSystemStatusRow(_T("HAL版本"), ReadRegistryStringValue(HKEY_LOCAL_MACHINE, _T("HARDWARE\\DESCRIPTION\\System"), _T("SystemBiosVersion")));
+	addSystemStatusRow(_T("电源计划"), ResolveActivePowerPlan());
 
 	auto addAcpiRow = [this](const CString& item, const CString& value)
 		{
@@ -4860,9 +5303,9 @@ void CMFCApplication1Dlg::LoadSystemInformation(bool loadSsdDetails)
 						{
 							hostWritesText.Format(_T("%.0Lf 次命令"), writeCommands);
 						}
-					}
-				}
-			}
+		}
+	}
+}
 
 			const CString deviceIdText = ResolveAtaSmartDeviceId(info, diskRows, pnpByPhysicalDriveId);
 
@@ -5243,6 +5686,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	DrawRoundedCard(memDc, m_screenMenuRect, m_activePage == PAGE_SCREEN_INFO ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_batteryLogMenuRect, m_activePage == PAGE_BATTERY_LOG ? selectedColor : unselectedColor, 10);
 	DrawRoundedCard(memDc, m_powerLogMenuRect, m_activePage == PAGE_POWER_LOG ? selectedColor : unselectedColor, 10);
+	DrawRoundedCard(memDc, m_utilityMenuRect, m_activePage == PAGE_UTILITY_TOOLS ? selectedColor : unselectedColor, 10);
 
 	if (m_activePage == PAGE_SYSTEM_INFO) DrawAccentStrip(memDc, m_infoMenuRect, UiAccent);
 	if (m_activePage == PAGE_SYSTEM_STATUS) DrawAccentStrip(memDc, m_statusMenuRect, UiAccent);
@@ -5254,6 +5698,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	if (m_activePage == PAGE_SCREEN_INFO) DrawAccentStrip(memDc, m_screenMenuRect, UiAccent);
 	if (m_activePage == PAGE_BATTERY_LOG) DrawAccentStrip(memDc, m_batteryLogMenuRect, UiAccent);
 	if (m_activePage == PAGE_POWER_LOG) DrawAccentStrip(memDc, m_powerLogMenuRect, UiAccent);
+	if (m_activePage == PAGE_UTILITY_TOOLS) DrawAccentStrip(memDc, m_utilityMenuRect, UiAccent);
 
 	memDc.SelectObject(&m_subtitleFont);
 	memDc.SetTextColor(UiSecondaryText);
@@ -5285,7 +5730,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
 	memDc.SetTextColor(m_activePage == PAGE_ACPI_INFO ? UiText : UiSecondaryText);
-	memDc.DrawText(_T("硬件详情"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	memDc.DrawText(_T("驱动详情"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 	menuTextRect = m_settingsMenuRect;
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
@@ -5311,6 +5756,11 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	menuTextRect.right -= 12;
 	memDc.SetTextColor(m_activePage == PAGE_POWER_LOG ? UiText : UiSecondaryText);
 	memDc.DrawText(_T("电源日志"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	menuTextRect = m_utilityMenuRect;
+	menuTextRect.left += 28;
+	menuTextRect.right -= 12;
+	memDc.SetTextColor(m_activePage == PAGE_UTILITY_TOOLS ? UiText : UiSecondaryText);
+	memDc.DrawText(_T("实用工具"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
 	if (m_activePage == PAGE_SYSTEM_SETTINGS)
 	{
@@ -5347,6 +5797,10 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	else if (m_activePage == PAGE_POWER_LOG)
 	{
 		DrawPowerCfgReportPage(memDc, clientRect, _T("电源日志"), _T("使用 powercfg /sleepstudy 导出睡眠与电源行为报告"), m_powerLogRows);
+	}
+	else if (m_activePage == PAGE_UTILITY_TOOLS)
+	{
+		DrawUtilityTools(memDc, clientRect);
 	}
 	else
 	{
@@ -5948,102 +6402,27 @@ void CMFCApplication1Dlg::DrawStartupItems(CDC& dc, const CRect& clientRect)
 	UpdateVerticalScrollBar(max(1, m_contentRect.Height()), max(1, m_contentRect.Height()));
 }
 
-void CMFCApplication1Dlg::DrawAcpiInformation(CDC& dc, const CRect& clientRect)
+void CMFCApplication1Dlg::DrawDriverDetails(CDC& dc, const CRect& clientRect)
 {
 	UNREFERENCED_PARAMETER(clientRect);
 
 	CRect headerRect(m_contentRect.left + 8, m_contentRect.top + 8, m_contentRect.right - 8, m_contentRect.top + 96);
-	CRect listRect(m_contentRect.left + 8, headerRect.bottom + 8, m_contentRect.right - 8, m_contentRect.bottom - 8);
 	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
-	DrawRoundedCard(dc, listRect, UiSurface, 12, UiBorder);
 
 	dc.SelectObject(&m_titleFont);
 	dc.SetTextColor(UiText);
 	CRect titleRect(headerRect.left + 18, headerRect.top + 10, headerRect.right - 16, headerRect.top + 42);
-	dc.DrawText(_T("硬件详情"), titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+	dc.DrawText(_T("驱动详情"), titleRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 
 	dc.SelectObject(&m_subtitleFont);
 	dc.SetTextColor(UiSecondaryText);
 	CRect subtitleRect(headerRect.left + 18, headerRect.top + 42, headerRect.right - 16, headerRect.bottom - 8);
-	dc.DrawText(_T("查看 CPU、CPUID、BIOS/SMBIOS、主板、机箱和系统产品信息"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+	dc.DrawText(_T("树状展示：计算机名称 > 设备类型 > 驱动名称 / 版本 / 日期"), subtitleRect, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+}
 
-	const int labelX = listRect.left + 16;
-	const int labelWidth = 178;
-	const int valueX = labelX + labelWidth + 34;
-	const int contentTop = listRect.top + 14;
-	const int contentBottom = listRect.bottom - 12;
-	const int contentWidth = (listRect.right - 16) - valueX;
-	const int valueRight = valueX + contentWidth;
-
-	TEXTMETRIC labelTm = {};
-	dc.SelectObject(&m_labelFont);
-	dc.GetTextMetrics(&labelTm);
-	const int labelLineHeight = max(static_cast<int>(labelTm.tmHeight + labelTm.tmExternalLeading), 24);
-
-	TEXTMETRIC valueTm = {};
-	dc.SelectObject(&m_valueFont);
-	dc.GetTextMetrics(&valueTm);
-	const int valueLineHeight = max(static_cast<int>(valueTm.tmHeight + valueTm.tmExternalLeading), 24);
-	const int rowPadding = 8;
-	const int rowGap = 10;
-
-	std::vector<int> rowHeights;
-	rowHeights.reserve(m_acpiRows.size());
-	int totalHeight = 14;
-	for (const InfoRow& row : m_acpiRows)
-	{
-		CRect calcRect(0, 0, max(contentWidth, 80), 0);
-		dc.SelectObject(&m_valueFont);
-		dc.DrawText(row.value, calcRect, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
-		const int valueHeight = max(valueLineHeight, calcRect.Height());
-		const int rowHeight = max(labelLineHeight, valueHeight) + rowPadding;
-		rowHeights.push_back(rowHeight);
-		totalHeight += rowHeight + rowGap;
-	}
-	totalHeight += 10;
-	UpdateVerticalScrollBar(totalHeight, max(1, listRect.Height() - 4));
-
-	int y = contentTop - m_scrollPos;
-	const int oldDc = dc.SaveDC();
-	dc.IntersectClipRect(listRect.left + 6, listRect.top + 6, listRect.right - 6, listRect.bottom - 6);
-
-	if (m_acpiRows.empty())
-	{
-		dc.SelectObject(&m_valueFont);
-		dc.SetTextColor(UiSecondaryText);
-		dc.TextOutW(labelX, y, _T("正在加载硬件详情，请稍候..."));
-	}
-	else
-	{
-		for (size_t i = 0; i < m_acpiRows.size(); ++i)
-		{
-			const InfoRow& row = m_acpiRows[i];
-			const int rowHeight = i < rowHeights.size() ? rowHeights[i] : (labelLineHeight + rowPadding);
-			dc.SelectObject(&m_labelFont);
-			dc.SetTextColor(UiTertiaryText);
-			CRect labelRect(labelX, y, labelX + labelWidth, y + rowHeight);
-			dc.DrawText(row.item, labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-			dc.SelectObject(&m_valueFont);
-			dc.SetTextColor(UiText);
-			CRect valueRect(valueX, y + 1, valueRight, y + rowHeight);
-			dc.DrawText(row.value, valueRect, DT_LEFT | DT_WORDBREAK);
-
-			CPen linePen(PS_SOLID, 1, UiBorder);
-			CPen* oldLinePen = dc.SelectObject(&linePen);
-			const int separatorY = y + rowHeight + (rowGap / 2);
-			dc.MoveTo(labelX, separatorY);
-			dc.LineTo(valueRight, separatorY);
-			dc.SelectObject(oldLinePen);
-
-			y += rowHeight + rowGap;
-			if (y > contentBottom + 20)
-			{
-				break;
-			}
-		}
-	}
-	dc.RestoreDC(oldDc);
+void CMFCApplication1Dlg::DrawAcpiInformation(CDC& dc, const CRect& clientRect)
+{
+	DrawDriverDetails(dc, clientRect);
 }
 
 // 绘制系统设置页背景卡片与分组标题。
@@ -6184,7 +6563,8 @@ void CMFCApplication1Dlg::RecalcLayoutRects(const CRect& clientRect)
 	m_screenMenuRect = CRect(m_sideRect.left + 10, m_ssdMenuRect.bottom + 10, m_sideRect.right - 10, m_ssdMenuRect.bottom + 62);
 	m_batteryLogMenuRect = CRect(m_sideRect.left + 10, m_screenMenuRect.bottom + 10, m_sideRect.right - 10, m_screenMenuRect.bottom + 62);
 	m_powerLogMenuRect = CRect(m_sideRect.left + 10, m_batteryLogMenuRect.bottom + 10, m_sideRect.right - 10, m_batteryLogMenuRect.bottom + 62);
-	m_settingsMenuRect = CRect(m_sideRect.left + 10, m_powerLogMenuRect.bottom + 10, m_sideRect.right - 10, m_powerLogMenuRect.bottom + 62);
+	m_utilityMenuRect = CRect(m_sideRect.left + 10, m_powerLogMenuRect.bottom + 10, m_sideRect.right - 10, m_powerLogMenuRect.bottom + 62);
+	m_settingsMenuRect = CRect(m_sideRect.left + 10, m_utilityMenuRect.bottom + 10, m_sideRect.right - 10, m_utilityMenuRect.bottom + 62);
 }
 
 // 动态创建设置页复选框、按钮与状态文本控件。
@@ -6240,6 +6620,296 @@ void CMFCApplication1Dlg::CreateSsdControls()
 	SetWindowTheme(m_ssdTab.GetSafeHwnd(), L"Explorer", nullptr);
 	RefreshSsdTabs();
 	UpdateSsdControlLayout();
+}
+
+void CMFCApplication1Dlg::CreateDriverControls()
+{
+	m_driverTree.Create(WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
+		CRect(0, 0, 10, 10), this, IDC_DRIVER_TREE);
+	m_driverTree.SetFont(&m_valueFont);
+	m_driverTree.SetItemHeight(40);
+	m_driverImageList.Create(24, 24, ILC_COLOR32 | ILC_MASK, 16, 8);
+	m_driverImageList.Add(m_hIcon != nullptr ? m_hIcon : AfxGetApp()->LoadStandardIcon(IDI_APPLICATION));
+	m_driverTree.SetImageList(&m_driverImageList, TVSIL_NORMAL);
+	SetWindowTheme(m_driverTree.GetSafeHwnd(), L"Explorer", nullptr);
+	ShowDriverDetailsLoading();
+}
+
+void CMFCApplication1Dlg::UpdateDriverControlLayout()
+{
+	if (!::IsWindow(m_driverTree.GetSafeHwnd()))
+	{
+		return;
+	}
+	CRect treeRect(m_contentRect.left + 14, m_contentRect.top + 118, m_contentRect.right - 14, m_contentRect.bottom - 14);
+	m_driverTree.MoveWindow(treeRect, TRUE);
+}
+
+void CMFCApplication1Dlg::LoadDriverDetails()
+{
+	if (m_driverDetailsLoaded)
+	{
+		return;
+	}
+
+	CollectDriverDetails(m_driverComputerName, m_driverClassGroups);
+	m_driverDetailsLoaded = true;
+	m_driverDetailsLoading = false;
+	RefreshDriverTree();
+}
+
+void CMFCApplication1Dlg::ShowDriverDetailsLoading()
+{
+	if (!::IsWindow(m_driverTree.GetSafeHwnd()))
+	{
+		return;
+	}
+	m_driverTree.SetRedraw(FALSE);
+	m_driverTree.DeleteAllItems();
+	HTREEITEM hComputer = m_driverTree.InsertItem(HasValue(m_driverComputerName) ? m_driverComputerName : _T("本机"), 0, 0, TVI_ROOT, TVI_LAST);
+	m_driverTree.InsertItem(_T("正在加载驱动信息..."), 0, 0, hComputer, TVI_LAST);
+	m_driverTree.Expand(hComputer, TVE_EXPAND);
+	m_driverTree.SetRedraw(TRUE);
+}
+
+void CMFCApplication1Dlg::CollectDriverDetails(CString& computerName, std::vector<DriverClassGroup>& classGroups)
+{
+	computerName.Empty();
+	classGroups.clear();
+
+	std::map<CString, DriverClassGroup, std::less<>> classes;
+	std::set<CString, std::less<>> seenKeys;
+
+	HDEVINFO deviceInfoSet = SetupDiGetClassDevs(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES);
+	if (deviceInfoSet != INVALID_HANDLE_VALUE)
+	{
+		for (DWORD index = 0;; ++index)
+		{
+			SP_DEVINFO_DATA deviceInfoData = {};
+			deviceInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
+			if (!SetupDiEnumDeviceInfo(deviceInfoSet, index, &deviceInfoData))
+			{
+				break;
+			}
+
+			CString name = ReadSetupDeviceProperty(deviceInfoSet, deviceInfoData, SPDRP_FRIENDLYNAME);
+			if (!HasValue(name))
+			{
+				name = ReadSetupDeviceProperty(deviceInfoSet, deviceInfoData, SPDRP_DEVICEDESC);
+			}
+			if (!HasValue(name))
+			{
+				continue;
+			}
+
+			CString classGuid;
+			TCHAR guidText[64] = {};
+			if (StringFromGUID2(deviceInfoData.ClassGuid, guidText, _countof(guidText)) > 0)
+			{
+				classGuid = guidText;
+			}
+
+			CString deviceClass = ReadSetupDeviceProperty(deviceInfoSet, deviceInfoData, SPDRP_CLASS);
+			if (!HasValue(deviceClass))
+			{
+				TCHAR className[128] = {};
+				if (SetupDiClassNameFromGuid(&deviceInfoData.ClassGuid, className, _countof(className), nullptr))
+				{
+					deviceClass = className;
+				}
+			}
+
+			const CString driverKey = ReadSetupDeviceProperty(deviceInfoSet, deviceInfoData, SPDRP_DRIVER);
+			CString driverVersion = ReadDriverKeyValue(driverKey, _T("DriverVersion"));
+			CString driverDate = FormatDriverDateText(ReadDriverKeyValue(driverKey, _T("DriverDate")));
+			ULONG deviceStatus = 0;
+			ULONG deviceProblem = 0;
+			const bool present = (CM_Get_DevNode_Status(&deviceStatus, &deviceProblem, deviceInfoData.DevInst, 0) == CR_SUCCESS);
+			if (!present)
+			{
+				continue;
+			}
+			const bool healthy = ((deviceStatus & DN_HAS_PROBLEM) == 0) && deviceProblem == 0;
+
+			const CString className = NormalizeDeviceClassName(deviceClass, classGuid);
+
+			name.Trim();
+			if (name.IsEmpty())
+			{
+				continue;
+			}
+
+			CString key = ToLower(className);
+			key += _T("|");
+			key += ToLower(name);
+			key += _T("|");
+			key += ToLower(driverVersion);
+			key += _T("|");
+			key += driverDate;
+			if (seenKeys.find(key) != seenKeys.end())
+			{
+				continue;
+			}
+			seenKeys.insert(key);
+
+			DriverEntry entry;
+			entry.name = name;
+			entry.version = driverVersion;
+			entry.date = driverDate;
+			entry.present = present;
+			entry.healthy = healthy;
+
+			DriverClassGroup& group = classes[className];
+			group.className = className;
+			if (!HasValue(group.classGuid))
+			{
+				group.classGuid = classGuid;
+			}
+			group.drivers.push_back(entry);
+		}
+		SetupDiDestroyDeviceInfoList(deviceInfoSet);
+	}
+
+	computerName = FirstValue(_T("ROOT\\CIMV2"), _T("SELECT Name FROM Win32_ComputerSystem"), _T("Name"));
+	if (!HasValue(computerName))
+	{
+		TCHAR nameBuffer[MAX_COMPUTERNAME_LENGTH + 1] = {};
+		DWORD nameChars = _countof(nameBuffer);
+		if (GetComputerName(nameBuffer, &nameChars))
+		{
+			computerName = nameBuffer;
+		}
+	}
+	if (!HasValue(computerName))
+	{
+		computerName = _T("本机");
+	}
+
+	for (auto& classPair : classes)
+	{
+		std::sort(classPair.second.drivers.begin(), classPair.second.drivers.end(), [](const DriverEntry& a, const DriverEntry& b)
+			{
+				if (a.healthy != b.healthy)
+				{
+					return a.healthy && !b.healthy;
+				}
+				if (a.present != b.present)
+				{
+					return a.present && !b.present;
+				}
+				return a.name.CompareNoCase(b.name) < 0;
+			});
+
+		classGroups.push_back(classPair.second);
+	}
+
+	std::sort(classGroups.begin(), classGroups.end(), [](const DriverClassGroup& a, const DriverClassGroup& b)
+		{
+			return a.className.CompareNoCase(b.className) < 0;
+		});
+}
+
+void CMFCApplication1Dlg::RefreshDriverTree()
+{
+	if (!::IsWindow(m_driverTree.GetSafeHwnd()))
+	{
+		return;
+	}
+
+	m_driverTree.SetRedraw(FALSE);
+	m_driverTree.DeleteAllItems();
+
+	if (m_driverImageList.GetSafeHandle() != nullptr)
+	{
+		m_driverImageList.DeleteImageList();
+	}
+	m_driverImageList.Create(24, 24, ILC_COLOR32 | ILC_MASK, max(16, static_cast<int>(m_driverClassGroups.size()) + 1), 8);
+	const int rootIcon = m_driverImageList.Add(m_hIcon != nullptr ? m_hIcon : AfxGetApp()->LoadStandardIcon(IDI_APPLICATION));
+	std::map<CString, int, std::less<>> iconByGuid;
+	auto classIconIndex = [&](const CString& classGuid) -> int
+		{
+			if (!HasValue(classGuid))
+			{
+				return rootIcon;
+			}
+			const CString key = ToLower(classGuid);
+			const auto found = iconByGuid.find(key);
+			if (found != iconByGuid.end())
+			{
+				return found->second;
+			}
+
+			int iconIndex = rootIcon;
+			GUID guid = {};
+			if (SUCCEEDED(CLSIDFromString(const_cast<LPOLESTR>(static_cast<LPCOLESTR>(classGuid.GetString())), &guid)))
+			{
+				HICON hClassIcon = nullptr;
+				if (SetupDiLoadClassIcon(&guid, &hClassIcon, nullptr) && hClassIcon != nullptr)
+				{
+					iconIndex = m_driverImageList.Add(hClassIcon);
+					DestroyIcon(hClassIcon);
+				}
+			}
+			iconByGuid[key] = iconIndex;
+			return iconIndex;
+		};
+	m_driverTree.SetImageList(&m_driverImageList, TVSIL_NORMAL);
+
+	HTREEITEM hComputer = m_driverTree.InsertItem(HasValue(m_driverComputerName) ? m_driverComputerName : _T("本机"), rootIcon, rootIcon, TVI_ROOT, TVI_LAST);
+	if (hComputer == nullptr)
+	{
+		m_driverTree.SetRedraw(TRUE);
+		return;
+	}
+
+	if (m_driverDetailsLoading && !m_driverDetailsLoaded)
+	{
+		m_driverTree.InsertItem(_T("正在加载驱动信息..."), rootIcon, rootIcon, hComputer, TVI_LAST);
+		m_driverTree.Expand(hComputer, TVE_EXPAND);
+		m_driverTree.SetRedraw(TRUE);
+		return;
+	}
+
+	if (m_driverClassGroups.empty())
+	{
+		m_driverTree.InsertItem(_T("未获取到驱动信息"), rootIcon, rootIcon, hComputer, TVI_LAST);
+		m_driverTree.Expand(hComputer, TVE_EXPAND);
+		m_driverTree.SetRedraw(TRUE);
+		return;
+	}
+
+	for (const auto& classGroup : m_driverClassGroups)
+	{
+		CString classLabel;
+		classLabel.Format(_T("%s  (%d)"), static_cast<LPCTSTR>(classGroup.className), static_cast<int>(classGroup.drivers.size()));
+
+		const int iconIndex = classIconIndex(classGroup.classGuid);
+		HTREEITEM hClass = m_driverTree.InsertItem(classLabel, iconIndex, iconIndex, hComputer, TVI_LAST);
+		if (hClass == nullptr)
+		{
+			continue;
+		}
+
+		for (const auto& dev : classGroup.drivers)
+		{
+			CString deviceName = dev.name;
+			const CString statusText = dev.healthy ? _T("● 正常运行") : _T("● 异常");
+			CString driverLine;
+			driverLine.Format(_T("%s    |    版本: %s    |    日期: %s    |    状态: %s"),
+				static_cast<LPCTSTR>(deviceName),
+				HasValue(dev.version) ? static_cast<LPCTSTR>(dev.version) : _T("N/A"),
+				HasValue(dev.date) ? static_cast<LPCTSTR>(dev.date) : _T("N/A"),
+				static_cast<LPCTSTR>(statusText));
+			HTREEITEM hDevice = m_driverTree.InsertItem(driverLine, iconIndex, iconIndex, hClass, TVI_LAST);
+			if (hDevice != nullptr)
+			{
+				m_driverTree.SetItemData(hDevice, dev.healthy ? 1 : 2);
+			}
+		}
+	}
+
+	m_driverTree.Expand(hComputer, TVE_EXPAND);
+	m_driverTree.SetRedraw(TRUE);
 }
 
 void CMFCApplication1Dlg::CreateStartupControls()
@@ -7032,6 +7702,7 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	const bool showAcpi = (m_activePage == PAGE_ACPI_INFO);
 	const bool showBatteryLog = (m_activePage == PAGE_BATTERY_LOG);
 	const bool showPowerLog = (m_activePage == PAGE_POWER_LOG);
+	const bool showUtility = (m_activePage == PAGE_UTILITY_TOOLS);
 	const int startupCmd = showStartup ? SW_SHOW : SW_HIDE;
 	for (CButton* checkBox : GetOptionCheckBoxes())
 	{
@@ -7053,6 +7724,11 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	if (::IsWindow(m_ssdTab.GetSafeHwnd()))
 	{
 		m_ssdTab.ShowWindow(showSsd ? SW_SHOW : SW_HIDE);
+	}
+
+	if (::IsWindow(m_driverTree.GetSafeHwnd()))
+	{
+		m_driverTree.ShowWindow(showAcpi ? SW_SHOW : SW_HIDE);
 	}
 
 	if (::IsWindow(m_startupList.GetSafeHwnd()))
@@ -7118,8 +7794,19 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 	else if (showAcpi)
 	{
 		m_scrollPos = 0;
+		UpdateDriverControlLayout();
+		if (!m_driverDetailsLoaded && !m_driverDetailsLoading)
+		{
+			m_driverDetailsLoading = true;
+			ShowDriverDetailsLoading();
+			PostMessage(WM_APP_LOAD_DRIVER_DETAILS, 0, 0);
+		}
+		else
+		{
+			RefreshDriverTree();
+		}
 	}
-	else if (showBatteryLog || showPowerLog)
+	else 	if (showBatteryLog || showPowerLog)
 	{
 		m_scrollPos = 0;
 		UpdatePowerLogControlLayout();
@@ -7137,6 +7824,10 @@ void CMFCApplication1Dlg::UpdatePageVisibility()
 			m_powerLogRows.push_back({ _T("状态"), _T("电源日志生成中...") });
 			PostMessage(WM_APP_LOAD_POWER_LOG_INFO, 0, 0);
 		}
+	}
+	else if (showUtility)
+	{
+		m_scrollPos = 0;
 	}
 }
 
@@ -7241,6 +7932,34 @@ void CMFCApplication1Dlg::OnNMCustomdrawStartupList(NMHDR* pNMHDR, LRESULT* pRes
 		{
 			const bool enabled = m_startupItems[static_cast<size_t>(row)].enabled;
 			customDraw->clrText = enabled ? RGB(22, 128, 62) : RGB(185, 28, 28);
+		}
+		*pResult = CDRF_DODEFAULT;
+		return;
+	}
+	default:
+		break;
+	}
+	*pResult = CDRF_DODEFAULT;
+}
+
+void CMFCApplication1Dlg::OnNMCustomdrawDriverTree(NMHDR* pNMHDR, LRESULT* pResult)
+{
+	LPNMTVCUSTOMDRAW customDraw = reinterpret_cast<LPNMTVCUSTOMDRAW>(pNMHDR);
+	switch (customDraw->nmcd.dwDrawStage)
+	{
+	case CDDS_PREPAINT:
+		*pResult = CDRF_NOTIFYITEMDRAW;
+		return;
+	case CDDS_ITEMPREPAINT:
+	{
+		const DWORD_PTR status = customDraw->nmcd.lItemlParam;
+		if (status == 1)
+		{
+			customDraw->clrText = RGB(22, 128, 62);
+		}
+		else if (status == 2)
+		{
+			customDraw->clrText = RGB(185, 28, 28);
 		}
 		*pResult = CDRF_DODEFAULT;
 		return;
@@ -7457,6 +8176,12 @@ void CMFCApplication1Dlg::StartSilentPreload()
 		m_powerLogRows.push_back({ _T("状态"), _T("电源日志后台生成中...") });
 		PostMessage(WM_APP_LOAD_POWER_LOG_INFO, 0, 0);
 	}
+	if (!m_driverDetailsLoaded && !m_driverDetailsLoading)
+	{
+		m_driverDetailsLoading = true;
+		ShowDriverDetailsLoading();
+		PostMessage(WM_APP_LOAD_DRIVER_DETAILS, 0, 0);
+	}
 }
 
 void CMFCApplication1Dlg::OpenPowerCfgReport(bool batteryReport)
@@ -7646,6 +8371,11 @@ void CMFCApplication1Dlg::OnBnClickedApplySettings()
 
 	SetStatusText(allSuccess ? _T("所有设置已应用成功。") : _T("部分设置应用失败，请检查管理员权限。"),
 		allSuccess ? RGB(30, 120, 40) : RGB(180, 50, 50));
+
+	if (AfxMessageBox(_T("设置已应用完成。部分设置需要重启系统才能生效，是否立即重启？"), MB_ICONQUESTION | MB_YESNO) == IDYES)
+	{
+		RunProcessAndWait(_T("shutdown.exe"), _T("-r -t 5 -c \"系统将在5秒后重启\""), nullptr);
+	}
 }
 
 // 二次确认后发起系统重启命令。
@@ -7905,5 +8635,236 @@ void CMFCApplication1Dlg::DeleteTempFile(const CString& filePath)
 	if (!filePath.IsEmpty())
 	{
 		DeleteFile(filePath);
+	}
+}
+
+void CMFCApplication1Dlg::DrawUtilityTools(CDC& dc, const CRect& clientRect)
+{
+	UNREFERENCED_PARAMETER(clientRect);
+
+	const int top = m_contentRect.top + 10;
+	const int headerHeight = 84;
+	const int headerGap = 14;
+	const int cardGap = 14;
+	const int iconSize = 64;
+	const int colCount = (m_contentRect.Width() >= 680) ? 3 : 2;
+	const int cardWidth = (m_contentRect.Width() - 32 - (colCount - 1) * cardGap) / colCount;
+	const int textAreaHeight = 52;
+	const int cardHeight = 20 + iconSize + 14 + textAreaHeight + 14;
+
+	CRect headerRect(m_contentRect.left + 12, top, m_contentRect.right - 12, top + headerHeight);
+	DrawRoundedCard(dc, headerRect, UiSubtleSurface, 12, UiBorder);
+
+	dc.SelectObject(&m_titleFont);
+	dc.SetTextColor(UiText);
+	CRect titleRect(headerRect.left + 16, headerRect.top + 10, headerRect.right - 16, headerRect.top + 40);
+	dc.DrawText(_T("实用工具"), titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+	dc.SelectObject(&m_subtitleFont);
+	dc.SetTextColor(UiSecondaryText);
+	CRect subtitleRect(headerRect.left + 16, headerRect.top + 40, headerRect.right - 16, headerRect.bottom - 8);
+	dc.DrawText(_T("常用硬件检测与驱动下载工具 · 点击卡片即可启动"), subtitleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+	const int totalWidth = colCount * cardWidth + (colCount - 1) * cardGap;
+	const int startX = m_contentRect.left + (m_contentRect.Width() - totalWidth) / 2;
+	int curY = headerRect.bottom + headerGap;
+	int curX = startX;
+	int cardIndex = 0;
+
+	struct ToolInfo { HICON hIcon; const TCHAR* name; CRect* outRect; };
+	const ToolInfo tools[] = {
+		{ m_hIconCpuz,             _T("CPU-Z"),             &m_toolCpuzRect },
+		{ m_hIconBattery,          _T("BatteryInfoView"),   &m_toolBatteryRect },
+		{ m_hIconCoreTemp,         _T("Core Temp"),         &m_toolCoreTempRect },
+		{ m_hIconHwinfo,           _T("HWiNFO64"),          &m_toolHwinfoRect },
+		{ m_hIconCrystalDiskMark,  _T("CrystalDiskMark"),   &m_toolCrystalDiskMarkRect },
+		{ m_hIconUsbTreeView,      _T("USBTreeView"),       &m_toolUsbTreeViewRect },
+	};
+
+	dc.SelectObject(&m_subtitleFont);
+
+	for (const ToolInfo& tool : tools)
+	{
+		CRect cardRect(curX, curY, curX + cardWidth, curY + cardHeight);
+		*(tool.outRect) = cardRect;
+		DrawRoundedCard(dc, cardRect, UiSurfaceAlt, 10, UiBorder);
+
+		if (tool.hIcon != nullptr)
+		{
+			const int iconX = cardRect.left + (cardWidth - iconSize) / 2;
+			const int iconY = cardRect.top + 20;
+			::DrawIconEx(dc.GetSafeHdc(), iconX, iconY, tool.hIcon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+		}
+
+		dc.SetTextColor(UiText);
+		const int nameTop = cardRect.top + 20 + iconSize + 14;
+		CRect nameRect(cardRect.left + 8, nameTop, cardRect.right - 8, nameTop + textAreaHeight);
+		dc.DrawText(tool.name, nameRect, DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+		cardIndex++;
+		if (cardIndex % colCount == 0)
+		{
+			curX = startX;
+			curY += cardHeight + cardGap;
+		}
+		else
+		{
+			curX += cardWidth + cardGap;
+		}
+	}
+
+	if (cardIndex % colCount != 0)
+	{
+		curY += cardHeight + cardGap;
+	}
+	curY += 10;
+
+	const int urlColCount = (m_contentRect.Width() >= 680) ? 2 : 1;
+	const int urlCardWidth = (m_contentRect.Width() - 32 - (urlColCount - 1) * cardGap) / urlColCount;
+	const int urlTotalWidth = urlColCount * urlCardWidth + (urlColCount - 1) * cardGap;
+	const int urlStartX = m_contentRect.left + (m_contentRect.Width() - urlTotalWidth) / 2;
+
+	struct UrlInfo { const TCHAR* name; CRect* outRect; };
+	const UrlInfo urls[] = {
+		{ _T("AMD 驱动下载"),    &m_toolAmdDriverRect },
+		{ _T("Nvidia 驱动下载"), &m_toolNvidiaDriverRect },
+	};
+
+	for (int i = 0; i < urlColCount; ++i)
+	{
+		const int ux = urlStartX + i * (urlCardWidth + cardGap);
+		CRect& r = *(urls[i].outRect);
+		r = CRect(ux, curY, ux + urlCardWidth, curY + cardHeight);
+		DrawRoundedCard(dc, r, UiSurfaceAlt, 10, UiBorder);
+
+		if (m_hIconGlobe != nullptr)
+		{
+			const int iconX = r.left + (urlCardWidth - iconSize) / 2;
+			const int iconY = r.top + 20;
+			::DrawIconEx(dc.GetSafeHdc(), iconX, iconY, m_hIconGlobe, iconSize, iconSize, 0, nullptr, DI_NORMAL);
+		}
+
+		dc.SetTextColor(UiText);
+		const int nameTop = r.top + 20 + iconSize + 14;
+		CRect nameRect(r.left + 8, nameTop, r.right - 8, nameTop + textAreaHeight);
+		dc.DrawText(urls[i].name, nameRect, DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS);
+	}
+}
+
+bool CMFCApplication1Dlg::ExtractArchiveToFolder(UINT resourceId, const CString& targetDir, const CString& expectedExe)
+{
+	const CString exeCheckPath = targetDir + _T("\\") + expectedExe;
+	if (PathFileExists(exeCheckPath))
+	{
+		return true;
+	}
+
+	HRSRC hResource = FindResource(AfxGetResourceHandle(), MAKEINTRESOURCE(resourceId), RT_RCDATA);
+	if (hResource == nullptr)
+	{
+		return false;
+	}
+
+	HGLOBAL hLoaded = LoadResource(AfxGetResourceHandle(), hResource);
+	if (hLoaded == nullptr)
+	{
+		return false;
+	}
+
+	const DWORD size = SizeofResource(AfxGetResourceHandle(), hResource);
+	const BYTE* data = static_cast<const BYTE*>(LockResource(hLoaded));
+	if (data == nullptr || size < 4)
+	{
+		return false;
+	}
+
+	DWORD offset = 0;
+	const DWORD fileCount = *reinterpret_cast<const DWORD*>(data + offset);
+	offset += sizeof(DWORD);
+
+	SHCreateDirectoryEx(nullptr, targetDir, nullptr);
+
+	for (DWORD i = 0; i < fileCount; ++i)
+	{
+		if (offset + sizeof(UINT16) > size)
+		{
+			return false;
+		}
+
+		const UINT16 pathLen = *reinterpret_cast<const UINT16*>(data + offset);
+		offset += sizeof(UINT16);
+
+		if (offset + pathLen * sizeof(WCHAR) + sizeof(DWORD) > size)
+		{
+			return false;
+		}
+
+		const CString relativePath(reinterpret_cast<const WCHAR*>(data + offset), pathLen);
+		offset += pathLen * sizeof(WCHAR);
+
+		const DWORD fileSize = *reinterpret_cast<const DWORD*>(data + offset);
+		offset += sizeof(DWORD);
+
+		if (offset + fileSize > size)
+		{
+			return false;
+		}
+
+		const CString fullPath = targetDir + _T("\\") + relativePath;
+
+		const int lastSlash = fullPath.ReverseFind(_T('\\'));
+		if (lastSlash >= 0)
+		{
+			const CString parentDir = fullPath.Left(lastSlash);
+			SHCreateDirectoryEx(nullptr, parentDir, nullptr);
+		}
+
+		CFile file;
+		if (!file.Open(fullPath, CFile::modeCreate | CFile::modeWrite | CFile::typeBinary))
+		{
+			continue;
+		}
+
+		file.Write(data + offset, fileSize);
+		file.Close();
+		offset += fileSize;
+	}
+
+	return PathFileExists(exeCheckPath);
+}
+
+void CMFCApplication1Dlg::LaunchUtilityTool(UINT resourceId, const CString& folderName, const CString& exeName)
+{
+	TCHAR modulePath[MAX_PATH] = {};
+	if (GetModuleFileName(nullptr, modulePath, MAX_PATH) == 0)
+	{
+		AfxMessageBox(_T("无法获取当前程序路径。"), MB_ICONERROR | MB_OK);
+		return;
+	}
+
+	CString exeDir(modulePath);
+	const int slash = exeDir.ReverseFind(_T('\\'));
+	if (slash >= 0)
+	{
+		exeDir = exeDir.Left(slash);
+	}
+
+	const CString targetDir = exeDir + _T("\\") + folderName;
+	const CString exePath = targetDir + _T("\\") + exeName;
+
+	if (!ExtractArchiveToFolder(resourceId, targetDir, exeName))
+	{
+		CString msg;
+		msg.Format(_T("无法释放 %s 所需文件。"), static_cast<LPCTSTR>(folderName));
+		AfxMessageBox(msg, MB_ICONERROR | MB_OK);
+		return;
+	}
+
+	HINSTANCE result = ShellExecute(nullptr, _T("open"), exePath, nullptr, targetDir, SW_SHOWNORMAL);
+	if (reinterpret_cast<INT_PTR>(result) <= 32)
+	{
+		CString msg;
+		msg.Format(_T("无法启动 %s，请确认文件是否存在。"), static_cast<LPCTSTR>(folderName));
+		AfxMessageBox(msg, MB_ICONERROR | MB_OK);
 	}
 }

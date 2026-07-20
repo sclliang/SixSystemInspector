@@ -264,6 +264,21 @@
   </ItemGroup>
   <ItemGroup>
     <Image Include="res\MFCApplication1.ico" />
+    <Image Include="res\cpuz.ico" />
+    <Image Include="res\BatteryInfoView.ico" />
+    <Image Include="res\CoreTemp64.ico" />
+    <Image Include="res\hwinfo.ico" />
+    <Image Include="res\DiskMark64.ico" />
+    <Image Include="res\usbtreeview.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="res\CPUZ.pack" />
+    <None Include="res\BatteryInfoView.pack" />
+    <None Include="res\CoreTemp64.pack" />
+    <None Include="res\hwinfo.pack" />
+    <None Include="res\CrystalDiskMark.pack" />
+    <None Include="res\USBTreeView.pack" />
+    <None Include="res\pack_folders.ps1" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

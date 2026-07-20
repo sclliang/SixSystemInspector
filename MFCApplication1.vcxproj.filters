@@ -59,5 +59,46 @@
     <Image Include="res\MFCApplication1.ico">
       <Filter>资源文件</Filter>
     </Image>
+    <Image Include="res\cpuz.ico">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="res\BatteryInfoView.ico">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="res\CoreTemp64.ico">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="res\hwinfo.ico">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="res\DiskMark64.ico">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="res\usbtreeview.ico">
+      <Filter>资源文件</Filter>
+    </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="res\CPUZ.pack">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="res\BatteryInfoView.pack">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="res\CoreTemp64.pack">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="res\hwinfo.pack">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="res\CrystalDiskMark.pack">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="res\USBTreeView.pack">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="res\pack_folders.ps1">
+      <Filter>资源文件</Filter>
+    </None>
   </ItemGroup>
 </Project>

@@ -74,6 +74,18 @@ END
 IDR_MAINFRAME           ICON                    "res\\Six.ico"
 IDR_WUB_X64             RCDATA                  "res\\Wub_x64.exe"
 IDR_WUB_INI             RCDATA                  "res\\Wub.ini"
+IDR_TOOL_CPUZ           RCDATA                  "res\\CPUZ.pack"
+IDR_TOOL_BATTERY        RCDATA                  "res\\BatteryInfoView.pack"
+IDR_TOOL_CORETEMP       RCDATA                  "res\\CoreTemp64.pack"
+IDR_TOOL_HWINFO         RCDATA                  "res\\hwinfo.pack"
+IDR_TOOL_CRYSTALDISKMARK RCDATA                 "res\\CrystalDiskMark.pack"
+IDR_TOOL_USBTREEVIEW    RCDATA                  "res\\USBTreeView.pack"
+IDI_TOOL_CPUZ           ICON                    "res\\cpuz.ico"
+IDI_TOOL_BATTERY        ICON                    "res\\BatteryInfoView.ico"
+IDI_TOOL_CORETEMP       ICON                    "res\\CoreTemp64.ico"
+IDI_TOOL_HWINFO         ICON                    "res\\hwinfo.ico"
+IDI_TOOL_CRYSTALDISKMARK ICON                   "res\\DiskMark64.ico"
+IDI_TOOL_USBTREEVIEW    ICON                    "res\\usbtreeview.ico"
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -87,7 +99,7 @@ CAPTION "关于 SystemInspector"
 FONT 9, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
     ICON            IDR_MAINFRAME,IDC_STATIC,14,14,21,20
-    LTEXT           "SystemInspector，版本 1.0.4.0",IDC_STATIC,42,14,136,8,SS_NOPREFIX
+    LTEXT           "SystemInspector，版本 1.0.5.0",IDC_STATIC,42,14,136,8,SS_NOPREFIX
     LTEXT           "版权所有 (C) 2026 Sixunited",IDC_STATIC,42,26,136,8
     DEFPUSHBUTTON   "确定",IDOK,133,41,50,14,WS_GROUP
 END
@@ -106,8 +118,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,4,0
- PRODUCTVERSION 1,0,4,0
+ FILEVERSION 1,0,5,0
+ PRODUCTVERSION 1,0,5,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -124,12 +136,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Sixunited"
             VALUE "FileDescription", "SystemInspector - Windows System Detection and Optimization Tool"
-            VALUE "FileVersion", "1.0.4.0"
+            VALUE "FileVersion", "1.0.5.0"
             VALUE "InternalName", "SystemInspector.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026 Sixunited. Author: Sclliang. All rights reserved."
             VALUE "OriginalFilename", "SystemInspector.exe"
             VALUE "ProductName", "SystemInspector"
-            VALUE "ProductVersion", "1.0.4.0"
+            VALUE "ProductVersion", "1.0.5.0"
             VALUE "Comments", "Author: Sclliang"
         END
     END

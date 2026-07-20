@@ -11,6 +11,7 @@
 class CMFCApplication1Dlg : public CDialogEx
 {
 	struct InfoRow;
+	struct DriverClassGroup;
 
 // 构造
 public:
@@ -61,6 +62,8 @@ protected:
 	afx_msg LRESULT OnLoadBatteryLogInformation(WPARAM wParam, LPARAM lParam);
 	// 处理异步加载电源日志消息。
 	afx_msg LRESULT OnLoadPowerLogInformation(WPARAM wParam, LPARAM lParam);
+	// 处理异步加载驱动详情消息。
+	afx_msg LRESULT OnLoadDriverDetails(WPARAM wParam, LPARAM lParam);
 	// 接收后台线程完成后的系统信息结果。
 	afx_msg LRESULT OnApplyLoadedSystemInformation(WPARAM wParam, LPARAM lParam);
 	// 接收后台线程完成后的 SSD 信息结果。
@@ -73,6 +76,8 @@ protected:
 	afx_msg LRESULT OnApplyLoadedBatteryLogInformation(WPARAM wParam, LPARAM lParam);
 	// 接收后台线程完成后的电源日志结果。
 	afx_msg LRESULT OnApplyLoadedPowerLogInformation(WPARAM wParam, LPARAM lParam);
+	// 接收后台线程完成后的驱动详情结果。
+	afx_msg LRESULT OnApplyLoadedDriverDetails(WPARAM wParam, LPARAM lParam);
 	// 处理控件颜色与背景刷设置。
 	afx_msg HBRUSH OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor);
 	// 处理“应用设置”按钮点击。
@@ -111,6 +116,8 @@ protected:
 	afx_msg void OnNMRClickStartupList(NMHDR* pNMHDR, LRESULT* pResult);
 	// 处理启动项列表自绘，用颜色区分启用/禁用状态。
 	afx_msg void OnNMCustomdrawStartupList(NMHDR* pNMHDR, LRESULT* pResult);
+	// 处理驱动详情树自绘，用颜色区分正常/异常状态。
+	afx_msg void OnNMCustomdrawDriverTree(NMHDR* pNMHDR, LRESULT* pResult);
 	DECLARE_MESSAGE_MAP()
 public:
 	// 初始化页面基础布局参数。
@@ -137,6 +144,8 @@ public:
 	void DrawStartupItems(CDC& dc, const CRect& clientRect);
 	// 绘制“硬件详情”页面。
 	void DrawAcpiInformation(CDC& dc, const CRect& clientRect);
+	// 绘制“驱动详情”页面（设备管理器风格树）。
+	void DrawDriverDetails(CDC& dc, const CRect& clientRect);
 	// 绘制“系统异常”页面。
 	void DrawSystemExceptionInformation(CDC& dc, const CRect& clientRect);
 	// 绘制“系统设置”页面。
@@ -161,6 +170,18 @@ public:
 	void CreateSsdControls();
 	// 更新 SSD 页签控件位置与尺寸。
 	void UpdateSsdControlLayout();
+	// 动态创建驱动详情树控件。
+	void CreateDriverControls();
+	// 更新驱动详情树控件位置与尺寸。
+	void UpdateDriverControlLayout();
+	// 加载驱动详情数据并填充树控件（同步入口，主要用于兼容旧调用）。
+	void LoadDriverDetails();
+	// 在驱动详情树显示加载中状态。
+	void ShowDriverDetailsLoading();
+	// 按当前驱动详情数据刷新树控件。
+	void RefreshDriverTree();
+	// 收集驱动详情数据。
+	void CollectDriverDetails(CString& computerName, std::vector<DriverClassGroup>& classGroups);
 	// 动态创建启动项页控件。
 	void CreateStartupControls();
 	// 更新启动项页控件位置与尺寸。
@@ -239,6 +260,13 @@ public:
 	// 处理背景擦除消息，减少界面闪烁。
 	afx_msg BOOL OnEraseBkgnd(CDC* pDC);
 
+	// 绘制“实用工具”页面（工具卡片 + 驱动链接）。
+	void DrawUtilityTools(CDC& dc, const CRect& clientRect);
+	// 释放文件夹存档到目标目录，若目标目录下的 expectedExe 已存在则跳过。
+	bool ExtractArchiveToFolder(UINT resourceId, const CString& targetDir, const CString& expectedExe);
+	// 释放并启动内嵌的工具程序。
+	void LaunchUtilityTool(UINT resourceId, const CString& folderName, const CString& exeName);
+
 private:
 	// 系统信息行：左侧项目名 + 右侧值。
 	struct InfoRow
@@ -251,6 +279,23 @@ private:
 	{
 		HWND targetHwnd = nullptr;
 		bool batteryReport = false;
+	};
+
+	struct DriverEntry
+	{
+		CString name;
+		CString version;
+		CString date;
+		bool present = true;
+		bool healthy = true;
+	};
+
+	struct DriverClassGroup
+	{
+		CString className;
+		CString classGuid;
+		std::vector<DriverEntry> drivers;
+		int hiddenCount = 0;
 	};
 
 	struct AsyncLoadResult
@@ -267,6 +312,8 @@ private:
 		std::vector<CString> ssdTabTitles;
 		CString batteryLogPath;
 		CString powerLogPath;
+		CString driverComputerName;
+		std::vector<DriverClassGroup> driverClassGroups;
 		int activeSsdIndex = 0;
 	};
 
@@ -305,6 +352,7 @@ private:
 	static UINT LoadSystemExceptionInformationThread(LPVOID parameter);
 	static UINT LoadBatteryLogInformationThread(LPVOID parameter);
 	static UINT LoadPowerLogInformationThread(LPVOID parameter);
+	static UINT LoadDriverDetailsThread(LPVOID parameter);
 	static void PostAsyncLoadResult(HWND targetHwnd, UINT message, AsyncLoadResult* result);
 
 	// 系统信息数据与绘制资源。
@@ -340,6 +388,7 @@ private:
 	CRect m_screenMenuRect;
 	CRect m_batteryLogMenuRect;
 	CRect m_powerLogMenuRect;
+	CRect m_utilityMenuRect;
 	CRect m_ssdTabRect;
 	int m_activeSsdIndex = 0;
 	bool m_ssdLoaded = false;
@@ -371,6 +420,12 @@ private:
 	CStatic m_statusText;
 	CStatic m_adminHintText;
 	CTabCtrl m_ssdTab;
+	CTreeCtrl m_driverTree;
+	CImageList m_driverImageList;
+	bool m_driverDetailsLoaded = false;
+	bool m_driverDetailsLoading = false;
+	CString m_driverComputerName;
+	std::vector<DriverClassGroup> m_driverClassGroups;
 	CListCtrl m_startupList;
 	CImageList m_startupRowImageList;
 	CButton m_btnStartupEnable;
@@ -391,4 +446,21 @@ private:
 	std::vector<InfoRow> m_batteryLogRows;
 	std::vector<InfoRow> m_powerLogRows;
 	std::vector<StartupItem> m_startupItems;
+
+	HICON m_hIconCpuz = nullptr;
+	HICON m_hIconBattery = nullptr;
+	HICON m_hIconCoreTemp = nullptr;
+	HICON m_hIconHwinfo = nullptr;
+	HICON m_hIconCrystalDiskMark = nullptr;
+	HICON m_hIconUsbTreeView = nullptr;
+	HICON m_hIconGlobe = nullptr;
+
+	CRect m_toolCpuzRect;
+	CRect m_toolBatteryRect;
+	CRect m_toolCoreTempRect;
+	CRect m_toolHwinfoRect;
+	CRect m_toolCrystalDiskMarkRect;
+	CRect m_toolUsbTreeViewRect;
+	CRect m_toolAmdDriverRect;
+	CRect m_toolNvidiaDriverRect;
 };
