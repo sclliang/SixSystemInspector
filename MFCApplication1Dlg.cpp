@@ -5710,7 +5710,7 @@ void CMFCApplication1Dlg::DrawSystemInformation(CDC& dc, const CRect& clientRect
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
 	memDc.SetTextColor(m_activePage == PAGE_SYSTEM_INFO ? UiText : UiSecondaryText);
-	memDc.DrawText(_T("系统信息"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	memDc.DrawText(_T("电脑配置"), menuTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 	menuTextRect = m_statusMenuRect;
 	menuTextRect.left += 28;
 	menuTextRect.right -= 12;
